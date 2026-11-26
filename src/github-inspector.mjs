@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { HARNESS_IDS } from './constants.mjs';
+import { normalizeVersion } from './shared.mjs';
 import { parseGitHubSlug, slugifyId } from './store.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -418,10 +419,27 @@ export async function checkPackageUpdate(pkg, lockEntry = {}, options = {}) {
       if (!result.latestVersion && latestTag) {
         result.latestVersion = latestTag.replace(/^v/, '');
       }
+      if (!result.latestVersion && pkg.kind === 'plugin') {
+        const rawBase = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(defaultBranch)}`;
+        for (const manifestPath of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json']) {
+          const text = await fetchText(`${rawBase}/${manifestPath}`, { fetchImpl });
+          if (!text) continue;
+          try {
+            const parsedManifest = JSON.parse(text);
+            if (typeof parsedManifest?.version === 'string' && parsedManifest.version.trim()) {
+              result.latestVersion = parsedManifest.version.trim();
+              break;
+            }
+          } catch { /* ignore invalid json */ }
+        }
+      }
       result.source = result.source ? `${result.source}+github` : 'github';
 
       if (!result.updateAvailable) {
-        if (latestTag && pkg.ref && pkg.ref !== defaultBranch && pkg.ref !== latestTag) {
+        const currentVer = pkg.version || lockEntry?.resolvedVersion || '';
+        if (result.latestVersion && currentVer && normalizeVersion(currentVer) !== normalizeVersion(result.latestVersion)) {
+          result.updateAvailable = true;
+        } else if (latestTag && pkg.ref && pkg.ref !== defaultBranch && normalizeVersion(pkg.ref) !== normalizeVersion(latestTag)) {
           result.updateAvailable = true;
         } else if (latestSha && lockEntry?.resolvedCommit && lockEntry.resolvedCommit !== latestSha) {
           result.updateAvailable = true;

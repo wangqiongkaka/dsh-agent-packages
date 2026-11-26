@@ -65,6 +65,15 @@ function repoFromMarketplaceSource(source) {
   return normalizeRepoUrl(source.repo || source.url || '');
 }
 
+async function readPluginManifestVersion(dir) {
+  if (!dir) return '';
+  for (const rel of [['.claude-plugin', 'plugin.json'], ['.codex-plugin', 'plugin.json'], ['plugin.json']]) {
+    const manifest = await readJsonQuiet(join(dir, ...rel));
+    if (typeof manifest?.version === 'string' && manifest.version.trim()) return manifest.version.trim();
+  }
+  return '';
+}
+
 // 只读文件识别各 Harness 已装插件，不调用任何 CLI。
 // 返回 { [harnessId]: { marketplaces: { name: repo }, plugins: [{ name, marketplace, version, repo }] } }
 export async function readInstalledPlugins(harnessPaths) {
@@ -76,11 +85,14 @@ export async function readInstalledPlugins(harnessPaths) {
     const known = await readJsonQuiet(join(claudeDir, 'known_marketplaces.json')) ?? {};
     const marketplaces = {};
     for (const [name, meta] of Object.entries(known)) marketplaces[name] = repoFromMarketplaceSource(meta?.source);
-    const plugins = Object.entries(installed?.plugins ?? {}).map(([key, entries]) => {
+    const plugins = await Promise.all(Object.entries(installed?.plugins ?? {}).map(async ([key, entries]) => {
       const [name, marketplace = ''] = key.split('@');
       const entry = Array.isArray(entries) ? (entries.find(e => e?.scope === 'user') ?? entries[0]) : entries;
-      return { name, marketplace, version: entry?.version || '', repo: marketplaces[marketplace] || '' };
-    });
+      let version = typeof entry?.version === 'string' && entry.version !== 'unknown' ? entry.version.trim() : '';
+      if (!version && entry?.installPath) version = await readPluginManifestVersion(entry.installPath);
+      if (!version && typeof entry?.gitCommitSha === 'string') version = entry.gitCommitSha.trim();
+      return { name, marketplace, version, repo: marketplaces[marketplace] || '' };
+    }));
     result['claude-code'] = { marketplaces, plugins };
   }
 
@@ -96,8 +108,12 @@ export async function readInstalledPlugins(harnessPaths) {
       const [, name, marketplace] = m;
       let version = '';
       try {
-        const versions = await readdir(join(dirname(harnessPaths.codex.mcpFile), 'plugins', 'cache', marketplace, name));
-        version = versions.filter(v => !v.startsWith('.')).sort().pop() || '';
+        const cacheRoot = join(dirname(harnessPaths.codex.mcpFile), 'plugins', 'cache', marketplace, name);
+        const versions = (await readdir(cacheRoot)).filter(v => !v.startsWith('.')).sort();
+        const latestDir = versions.pop() || '';
+        if (latestDir) {
+          version = await readPluginManifestVersion(join(cacheRoot, latestDir)) || (latestDir === 'local' ? '' : latestDir);
+        }
       } catch { version = ''; }
       plugins.push({ name, marketplace, version, repo: marketplaces[marketplace] || '' });
     }
@@ -112,9 +128,9 @@ export async function readInstalledPlugins(harnessPaths) {
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
       const dir = join(agyDir, entry.name);
-      const manifest = await readJsonQuiet(join(dir, '.claude-plugin', 'plugin.json')) ?? await readJsonQuiet(join(dir, 'plugin.json')) ?? {};
+      const version = await readPluginManifestVersion(dir);
       const gitUrl = /^\s*url\s*=\s*(\S+)/m.exec(await readTextQuiet(join(dir, '.git', 'config')))?.[1] || '';
-      plugins.push({ name: entry.name, marketplace: '', version: manifest.version || '', repo: gitUrl ? normalizeRepoUrl(gitUrl) : '' });
+      plugins.push({ name: entry.name, marketplace: '', version, repo: gitUrl ? normalizeRepoUrl(gitUrl) : '' });
     }
     result.antigravity = { marketplaces: {}, plugins };
   }

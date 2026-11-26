@@ -570,7 +570,7 @@ export async function applyPackageAction({
       steps.push(step);
 
       if (!dryRun && step.status === 'ok') {
-        nextLock.resolvedVersion = pkg.version || pkg.ref.replace(/^v/, '') || nextLock.resolvedVersion || '';
+        nextLock.resolvedVersion = pkg.version || pkg.ref.replace(/^v/, '') || step.installedVersion || nextLock.resolvedVersion || '';
         nextLock.harnesses[harnessId] = {
           status: 'installed',
           method: step.method,
