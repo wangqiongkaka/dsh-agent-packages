@@ -123,6 +123,10 @@ export function normalizePackage(input, existing) {
     }
   }
 
+  const pluginInput = isPlainObject(input.plugin) ? input.plugin : (existing?.plugin ?? {});
+  const pluginName = slugifyId(pluginInput.name || id) || id;
+  const pluginMarketplace = slugifyId(pluginInput.marketplace || pluginName) || pluginName;
+
   const now = new Date().toISOString();
   return {
     id,
@@ -147,6 +151,10 @@ export function normalizePackage(input, existing) {
       envRefs,
       headers,
       overrides,
+    },
+    plugin: {
+      name: pluginName,
+      marketplace: pluginMarketplace,
     },
     commands,
     createdAt: existing?.createdAt ?? now,

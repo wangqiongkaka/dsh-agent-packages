@@ -3,10 +3,11 @@ export const HEADER_KEY = 'x-agent-pkg-key';
 export const PLUGIN_ID = 'dsh-agent-packages';
 
 export const HARNESS_IDS = ['codex', 'claude-code', 'antigravity', 'dsh'];
-export const PACKAGE_KINDS = ['skills-repo', 'mcp', 'installer'];
+export const PACKAGE_KINDS = ['skills-repo', 'plugin', 'mcp', 'installer'];
 
 export const KIND_LABELS = {
   'skills-repo': 'Skills 仓库',
+  plugin: '插件（含 Hooks）',
   mcp: 'MCP Server',
   installer: '自定义安装器',
 };
