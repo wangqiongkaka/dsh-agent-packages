@@ -263,9 +263,13 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+// 简单命令名原样输出，含空格等字符的路径加引号
+const shellWord = value => (/^[A-Za-z0-9._\/~-]+$/.test(value) ? value : shellQuote(value));
+
 // 插件交给各 Harness 自己的插件 CLI 安装：hooks、命令、Skills 由 Harness 注册与清理，本插件不直接改写 hooks 配置。
+// claudeCommand 是用户启动 Claude Code 的命令（如 reclaude），插件命令经它执行才能装进对应的配置目录。
 // 返回 { command, warnings }；该 Harness 无插件机制时返回 null。
-export function buildPluginCommand(pkg, harnessId, action, installed = {}) {
+export function buildPluginCommand(pkg, harnessId, action, installed = {}, claudeCommand = 'claude') {
   const { name, marketplace } = pkg.plugin;
   const id = `${name}@${marketplace}`;
   const gh = parseGitHubSlug(pkg.repo);
@@ -276,13 +280,14 @@ export function buildPluginCommand(pkg, harnessId, action, installed = {}) {
   if (action !== 'uninstall' && !source) throw new Error('插件类型需要填写 GitHub 仓库地址（插件市场来源）');
 
   if (harnessId === 'claude-code') {
-    if (action === 'uninstall') return { command: `claude plugin uninstall ${id}`, warnings: [] };
+    const claude = shellWord(claudeCommand || 'claude');
+    if (action === 'uninstall') return { command: `${claude} plugin uninstall ${id}`, warnings: [] };
     const refresh = marketplaceKnown
-      ? `claude plugin marketplace update ${marketplace}`
-      : `claude plugin marketplace add ${shellQuote(source)}`;
+      ? `${claude} plugin marketplace update ${marketplace}`
+      : `${claude} plugin marketplace add ${shellQuote(source)}`;
     const verb = action === 'upgrade' && marketplaceKnown ? 'update' : 'install';
     return {
-      command: `${refresh} && claude plugin ${verb} ${id}`,
+      command: `${refresh} && ${claude} plugin ${verb} ${id}`,
       warnings: ['插件 hooks 由 Claude Code 注册，新开会话后生效', ...refWarning],
     };
   }
@@ -329,7 +334,7 @@ async function installedPluginStep(pkg, harnessId, harnessPaths, dryRun) {
 
 async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, options) {
   const installed = await readInstalledPlugins(harnessPaths);
-  const built = buildPluginCommand(pkg, harnessId, action, installed);
+  const built = buildPluginCommand(pkg, harnessId, action, installed, harnessPaths['claude-code']?.command);
   if (!built) {
     return {
       harness: harnessId,
