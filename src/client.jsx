@@ -9,6 +9,7 @@ import {
   HEADER_KEY,
   KIND_LABELS,
   PLUGIN_ID,
+  composeInstructionContent,
   formatHarnessVersion,
   formatVersion,
   summarizePackageVersions,
@@ -169,10 +170,56 @@ function isHttpUrl(value) {
 }
 
 function dotClass(status) {
-  if (status === 'installed') return 'ap-dot ap-dot-installed';
-  if (status === 'failed') return 'ap-dot ap-dot-failed';
-  if (status === 'not-installed') return 'ap-dot ap-dot-pending';
+  if (status === 'installed' || status === 'synced') return 'ap-dot ap-dot-installed';
+  if (status === 'failed' || status === 'error') return 'ap-dot ap-dot-failed';
+  if (status === 'not-installed' || status === 'modified' || status === 'missing' || status === 'symlink') return 'ap-dot ap-dot-pending';
   return 'ap-dot';
+}
+
+function instructionStatusLabel(status) {
+  switch (status) {
+    case 'synced': return '已同步';
+    case 'modified': return '待同步';
+    case 'missing': return '未创建';
+    case 'symlink': return '待拆软链';
+    case 'disabled': return '未启用';
+    case 'error': return '读取异常';
+    default: return '未维护';
+  }
+}
+
+function instructionsToDraft(instructions) {
+  const harnesses = {};
+  for (const harnessId of HARNESS_IDS) {
+    const entry = instructions?.harnesses?.[harnessId];
+    harnesses[harnessId] = {
+      enabled: entry?.enabled ?? true,
+      privateContent: entry?.privateContent ?? '',
+    };
+  }
+  return {
+    shared: instructions?.shared ?? '',
+    harnesses,
+  };
+}
+
+function isInstructionsDraftDirty(draft, instructions) {
+  if (!instructions) return false;
+  if ((draft.shared ?? '') !== (instructions.shared ?? '')) return true;
+  for (const harnessId of HARNESS_IDS) {
+    const saved = instructions.harnesses?.[harnessId];
+    const current = draft.harnesses?.[harnessId];
+    if (!saved || !current) continue;
+    if (Boolean(current.enabled) !== Boolean(saved.enabled)) return true;
+    if ((current.privateContent ?? '') !== (saved.privateContent ?? '')) return true;
+  }
+  return false;
+}
+
+function countLines(text) {
+  const raw = String(text ?? '');
+  if (!raw) return 0;
+  return raw.replace(/\n$/, '').split('\n').length;
 }
 
 function stepBadgeClass(status) {
@@ -409,6 +456,12 @@ export function PackagesPage() {
   const [doctorHarness, setDoctorHarness] = useState(HARNESS_IDS[0]);
   const [openMenuId, setOpenMenuId] = useState('');
 
+  const [instrDraft, setInstrDraft] = useState(() => instructionsToDraft(null));
+  const [instrHarness, setInstrHarness] = useState(HARNESS_IDS[0]);
+  const [instrImportSource, setInstrImportSource] = useState(HARNESS_IDS[0]);
+  const [instrPreviewOpen, setInstrPreviewOpen] = useState(true);
+  const instrInitializedRef = useRef(false);
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [analyzerHarness, setAnalyzerHarness] = useState('');
   const [analyzerModel, setAnalyzerModel] = useState('');
@@ -442,6 +495,12 @@ export function PackagesPage() {
         setState(data);
         setAnalyzerHarness(data.settings?.analyzer?.harness || '');
         setAnalyzerModel(data.settings?.analyzer?.model || '');
+        if (!instrInitializedRef.current && data.instructions) {
+          instrInitializedRef.current = true;
+          setInstrDraft(instructionsToDraft(data.instructions));
+          const firstExisting = HARNESS_IDS.find(id => data.instructions.harnesses?.[id]?.exists);
+          if (firstExisting) setInstrImportSource(firstExisting);
+        }
       })
       .catch(cause => {
         if (active) setError(cause.message);
@@ -768,6 +827,69 @@ export function PackagesPage() {
 
   const showFilters = (state?.packages.length ?? 0) > 1 || filterKind !== 'all' || Boolean(search.trim());
   const needsGlobalSync = Boolean(state && (state.summary.pendingInstall > 0 || state.summary.failed > 0));
+  const instrDirty = isInstructionsDraftDirty(instrDraft, state?.instructions);
+
+  function updateInstrHarness(harnessId, patch) {
+    setInstrDraft(prev => ({
+      ...prev,
+      harnesses: {
+        ...prev.harnesses,
+        [harnessId]: {
+          ...(prev.harnesses[harnessId] || { enabled: true, privateContent: '' }),
+          ...patch,
+        },
+      },
+    }));
+  }
+
+  async function saveInstructionsAction({ syncNow = false, dryRun = false, targetHarnesses } = {}) {
+    await runAction(
+      {
+        type: 'instructions.save',
+        shared: instrDraft.shared,
+        harnesses: instrDraft.harnesses,
+        syncNow,
+        dryRun,
+        ...(targetHarnesses ? { targetHarnesses } : {}),
+      },
+      {
+        onSuccess: res => {
+          if (res.state?.instructions) {
+            setInstrDraft(instructionsToDraft(res.state.instructions));
+          }
+        },
+      }
+    );
+  }
+
+  async function previewInstructionsAction(targetHarnesses) {
+    await runAction({
+      type: 'instructions.sync',
+      dryRun: true,
+      ...(targetHarnesses ? { harnesses: targetHarnesses } : {}),
+      draft: instrDraft,
+    });
+  }
+
+  async function importInstructionsAction(sourceHarness, target) {
+    await runAction(
+      {
+        type: 'instructions.import',
+        harness: sourceHarness,
+        target,
+        save: false,
+      },
+      {
+        onSuccess: res => {
+          if (target === 'shared') {
+            setInstrDraft(prev => ({ ...prev, shared: res.content ?? '' }));
+          } else {
+            updateInstrHarness(sourceHarness, { privateContent: res.content ?? '' });
+          }
+        },
+      }
+    );
+  }
   const editingInline = Boolean(
     editorOpen && editingOriginalId && filteredPackages.some(pkg => pkg.id === editingOriginalId)
   );
@@ -945,6 +1067,15 @@ export function PackagesPage() {
                   onClick={() => setTab('packages')}
                 >
                   包清单（{state.packages.length}）
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  className="ap-tab"
+                  aria-selected={tab === 'instructions'}
+                  onClick={() => setTab('instructions')}
+                >
+                  全局指令
                 </button>
                 <button
                   type="button"
@@ -1602,6 +1733,296 @@ export function PackagesPage() {
             );
           })()}
 
+          {tab === 'instructions' && state.instructions && (() => {
+            const instructions = state.instructions;
+            const activeHarness = HARNESS_IDS.includes(instrHarness) ? instrHarness : HARNESS_IDS[0];
+            const info = instructions.harnesses[activeHarness];
+            const draftEntry = instrDraft.harnesses[activeHarness] || { enabled: true, privateContent: '' };
+            const hasAnySource = Boolean(instrDraft.shared.trim() || draftEntry.privateContent.trim());
+            const liveComposed = hasAnySource
+              ? composeInstructionContent({
+                  shared: instrDraft.shared,
+                  privateContent: draftEntry.privateContent,
+                  externalBlocks: info?.externalBlocks ?? [],
+                })
+              : '';
+            const liveParts = [
+              instrDraft.shared.trim() ? '公共内容' : '',
+              draftEntry.privateContent.trim() ? '私有内容' : '',
+              ...(info?.externalBlocks?.length ? [`外部块 ${info.externalBlocks.map(b => b.id).join('、')}`] : []),
+            ].filter(Boolean);
+
+            const harnessOptions = HARNESS_IDS.map(harnessId => {
+              const h = instructions.harnesses[harnessId];
+              const hDraft = instrDraft.harnesses[harnessId];
+              const statusText = hDraft && !hDraft.enabled
+                ? '未启用'
+                : instructionStatusLabel(h?.status);
+              return {
+                value: harnessId,
+                label: HARNESS_META[harnessId].label,
+                meta: `${HARNESS_META[harnessId].instructionsFileName} · ${statusText}`,
+              };
+            });
+
+            const importOptions = HARNESS_IDS.map(harnessId => {
+              const h = instructions.harnesses[harnessId];
+              const meta = h?.brokenSymlink
+                ? '失效软链'
+                : h?.isSymlink
+                  ? `${HARNESS_META[harnessId].instructionsFileName} · 软链`
+                  : h?.exists
+                    ? HARNESS_META[harnessId].instructionsFileName
+                    : '未创建';
+              return {
+                value: harnessId,
+                label: HARNESS_META[harnessId].label,
+                meta,
+              };
+            });
+            const importSourceInfo = instructions.harnesses[instrImportSource];
+            const canImportShared = Boolean(importSourceInfo?.exists && !importSourceInfo?.brokenSymlink);
+            const canImportPrivate = Boolean(info?.exists && !info?.brokenSymlink);
+
+            return (
+              <section className="ap-instr-stack" aria-label="全局指令文件维护">
+                <article className="ap-card ap-instr-overview">
+                  <div className="ap-instr-head">
+                    <div className="ap-pkg-title-row">
+                      <h3>AGENTS.md / CLAUDE.md</h3>
+                      <span className="ap-badge">
+                        已启用 {instructions.summary.enabled} · 已同步 {instructions.summary.synced}
+                      </span>
+                      {instrDirty && (
+                        <span className="ap-badge ap-badge-update">未保存修改</span>
+                      )}
+                    </div>
+                    <div className="ap-actions">
+                      {instrDirty && (
+                        <Button
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => setInstrDraft(instructionsToDraft(instructions))}
+                        >
+                          还原
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        disabled={busy || !instrDirty}
+                        onClick={() => void saveInstructionsAction({ syncNow: false })}
+                      >
+                        仅保存
+                      </Button>
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => void previewInstructionsAction()}
+                      >
+                        预览变更
+                      </Button>
+                      <Button
+                        variant="primary"
+                        disabled={busy}
+                        onClick={() => void saveInstructionsAction({ syncNow: true, dryRun: false })}
+                      >
+                        {instrDirty ? '保存并同步全部' : '同步全部'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="ap-instr-chips" role="group" aria-label="各 Harness 指令文件状态">
+                    {HARNESS_IDS.map(harnessId => {
+                      const h = instructions.harnesses[harnessId];
+                      const hDraft = instrDraft.harnesses[harnessId];
+                      const effectiveStatus = hDraft && !hDraft.enabled ? 'disabled' : h.status;
+                      const isActive = harnessId === activeHarness;
+                      const tooltip = [
+                        `${HARNESS_META[harnessId].label}（${h.targetFile}）`,
+                        `状态：${instructionStatusLabel(effectiveStatus)}`,
+                        h.isSymlink ? `当前为软链 → ${h.symlinkTarget}` : '',
+                        h.externalBlocks.length ? `保留外部块：${h.externalBlocks.map(b => b.id).join('、')}` : '',
+                      ].filter(Boolean).join(' · ');
+                      return (
+                        <button
+                          key={harnessId}
+                          type="button"
+                          className={`ap-chip ap-instr-chip ${isActive ? 'is-selected' : ''} ${effectiveStatus === 'disabled' ? 'ap-chip-muted' : ''}`.trim()}
+                          aria-pressed={isActive}
+                          title={tooltip}
+                          onClick={() => setInstrHarness(harnessId)}
+                        >
+                          <span className={dotClass(effectiveStatus)} />
+                          <span>{HARNESS_META[harnessId].label}</span>
+                          <span className="ap-chip-meta">{h.fileName}</span>
+                          <span className="ap-chip-meta">· {instructionStatusLabel(effectiveStatus)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </article>
+
+                <article className="ap-card ap-instr-card" aria-label="公共内容维护">
+                  <div className="ap-instr-head">
+                    <div className="ap-pkg-title-row">
+                      <h3>公共内容</h3>
+                      <span className="ap-badge ap-badge-kind">全部启用端共享</span>
+                    </div>
+                    <div className="ap-instr-import-bar">
+                      <label htmlFor="ap-instr-import-source" className="ap-sr-only">导入来源 Harness</label>
+                      <Select
+                        id="ap-instr-import-source"
+                        ariaLabel="导入来源 Harness"
+                        className="ap-instr-import-select"
+                        value={instrImportSource}
+                        options={importOptions}
+                        onChange={setInstrImportSource}
+                      />
+                      <Button
+                        variant="outline"
+                        disabled={busy || !canImportShared}
+                        title={canImportShared ? `从 ${importSourceInfo.targetFile} 导入到公共内容（自动跳过外部标记块）` : '所选 Harness 暂无可导入的文件'}
+                        onClick={() => void importInstructionsAction(instrImportSource, 'shared')}
+                      >
+                        导入到公共
+                      </Button>
+                    </div>
+                  </div>
+                  <div className="ap-field">
+                    <label htmlFor="ap-instr-shared" className="ap-sr-only">公共内容</label>
+                    <textarea
+                      id="ap-instr-shared"
+                      className="ap-textarea ap-instr-editor"
+                      placeholder="填写所有 Harness 共享的全局规则 Markdown（也可点击右上角从本机现有 AGENTS.md / CLAUDE.md 导入）"
+                      value={instrDraft.shared}
+                      onChange={e => setInstrDraft(prev => ({ ...prev, shared: e.target.value }))}
+                    />
+                  </div>
+                  <div className="ap-instr-foot">
+                    <span>共 {countLines(instrDraft.shared)} 行 · {instrDraft.shared.length} 字符</span>
+                    <span>公共内容置于文件前部；同步时自动保留各端已有的外部工具标记块。</span>
+                  </div>
+                </article>
+
+                {info && (
+                  <article className="ap-card ap-doctor-card" aria-label={`${HARNESS_META[activeHarness].label} 私有内容与预览`}>
+                    <div className="ap-doctor-head">
+                      <div className="ap-doctor-switcher">
+                        <label htmlFor="ap-instr-harness" className="ap-sr-only">选择 Harness</label>
+                        <Select
+                          id="ap-instr-harness"
+                          ariaLabel="选择 Harness"
+                          className="ap-doctor-select"
+                          value={activeHarness}
+                          options={harnessOptions}
+                          onChange={setInstrHarness}
+                        />
+                      </div>
+                      <div className="ap-instr-harness-actions">
+                        <label className="ap-check-item">
+                          <input
+                            id="ap-instr-enabled"
+                            type="checkbox"
+                            checked={Boolean(draftEntry.enabled)}
+                            onChange={e => updateInstrHarness(activeHarness, { enabled: e.target.checked })}
+                          />
+                          <span>启用同步</span>
+                        </label>
+                        <Button
+                          variant="outline"
+                          disabled={busy || !canImportPrivate}
+                          title={canImportPrivate ? `从 ${info.targetFile} 导入到当前端私有内容` : '当前端文件尚未创建'}
+                          onClick={() => void importInstructionsAction(activeHarness, 'private')}
+                        >
+                          导入到私有
+                        </Button>
+                        <Button
+                          variant="outline"
+                          disabled={busy}
+                          onClick={() => void previewInstructionsAction([activeHarness])}
+                        >
+                          预览此端
+                        </Button>
+                        <Button
+                          variant="primary"
+                          disabled={busy}
+                          onClick={() => void saveInstructionsAction({ syncNow: true, dryRun: false, targetHarnesses: [activeHarness] })}
+                        >
+                          同步此端
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="ap-doctor-paths">
+                      <div className="ap-doctor-path-row">
+                        <span className="ap-doctor-path-label">目标文件</span>
+                        <code>{info.targetFile}</code>
+                      </div>
+                      {info.isSymlink && (
+                        <div className="ap-doctor-path-row">
+                          <span className="ap-doctor-path-label">软链提示</span>
+                          <span className="ap-instr-warn-text">
+                            当前指向 <code>{info.symlinkTarget || '未知路径'}</code>，同步时将拆分为独立文件写入，不改动原链接目标
+                          </span>
+                        </div>
+                      )}
+                      {info.externalBlocks.length > 0 && (
+                        <div className="ap-doctor-path-row">
+                          <span className="ap-doctor-path-label">外部标记块</span>
+                          <div className="ap-doctor-stats">
+                            {info.externalBlocks.map(block => (
+                              <span key={`${block.id}-${block.startMarker}`} className="ap-badge ap-badge-ok">
+                                {block.id}
+                              </span>
+                            ))}
+                            <span className="ap-help" style={{ marginTop: 0 }}>同步时自动保留</span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {info.readError && (
+                      <p className="ap-field-error" role="alert">读取目标文件失败：{info.readError}</p>
+                    )}
+
+                    <div className="ap-field">
+                      <label htmlFor="ap-instr-private">{HARNESS_META[activeHarness].label} 私有内容</label>
+                      <textarea
+                        id="ap-instr-private"
+                        className="ap-textarea ap-instr-editor ap-instr-editor-private"
+                        placeholder={`填写仅对 ${HARNESS_META[activeHarness].label}（${info.fileName}）生效的私有规则，留空则仅写入公共内容`}
+                        value={draftEntry.privateContent}
+                        onChange={e => updateInstrHarness(activeHarness, { privateContent: e.target.value })}
+                      />
+                    </div>
+
+                    <details
+                      className="ap-section ap-advanced ap-instr-preview-box"
+                      open={instrPreviewOpen}
+                      onToggle={e => setInstrPreviewOpen(e.currentTarget.open)}
+                    >
+                      <summary>
+                        最终写入预览
+                        <span className="ap-help">
+                          {liveComposed
+                            ? `${liveParts.join(' + ')} · 共 ${countLines(liveComposed)} 行`
+                            : '内容为空'}
+                        </span>
+                      </summary>
+                      {liveComposed ? (
+                        <pre className="ap-instr-preview">{liveComposed}</pre>
+                      ) : (
+                        <p className="ap-help" style={{ marginTop: 0 }}>
+                          公共与私有内容均为空，同步时将跳过写入，不会清空现有文件。
+                        </p>
+                      )}
+                    </details>
+                  </article>
+                )}
+              </section>
+            );
+          })()}
+
           {tab === 'doctor' && (() => {
             const availableHarnesses = HARNESS_IDS.filter(id => scanReport?.harnesses?.[id]);
             const activeHarness = availableHarnesses.includes(doctorHarness)
@@ -1690,6 +2111,12 @@ export function PackagesPage() {
                               <code>{info.mcpFile}</code>
                             </div>
                           )}
+                          {info.instructionsFile && (
+                            <div className="ap-doctor-path-row">
+                              <span className="ap-doctor-path-label">指令文件</span>
+                              <code>{info.instructionsFile}</code>
+                            </div>
+                          )}
                         </div>
 
                         {info.mcpError && (
@@ -1755,7 +2182,13 @@ export function PackagesPage() {
                       <span className={stepBadgeClass(step.status)}>{step.status}</span>
                       {step.packageName && <strong>{step.packageName}</strong>}
                       <span className="ap-badge">
-                        {step.harness === 'shared' ? '全局 CLI' : step.harness === 'repo' ? '仓库' : (HARNESS_META[step.harness]?.label || step.harness)}
+                        {step.harness === 'shared'
+                          ? '全局 CLI'
+                          : step.harness === 'repo'
+                            ? '仓库'
+                            : step.harness === 'instructions'
+                              ? '全局指令'
+                              : (HARNESS_META[step.harness]?.label || step.harness)}
                       </span>
                       <span>{step.detail}</span>
                     </div>
@@ -1777,6 +2210,9 @@ export function PackagesPage() {
             <div>
               <span>清单文件：<code>{state.manifestFile}</code></span>
               <span>锁文件：<code>{state.lockFile}</code></span>
+              {state.instructions?.dir && (
+                <span>指令目录：<code>{state.instructions.dir}</code></span>
+              )}
             </div>
           </details>
         </>

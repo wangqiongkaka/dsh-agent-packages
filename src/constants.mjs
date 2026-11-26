@@ -23,6 +23,7 @@ export function resolveClaudeCodePaths(home, explicitConfigDir = '') {
     mcpFile: explicit ? join(configDir, '.claude.json') : join(resolvedHome, '.claude.json'),
     mcpFormat: 'json-claude',
     pluginsDir: join(configDir, 'plugins'),
+    instructionsFile: join(configDir, 'CLAUDE.md'),
   };
 }
 
@@ -40,6 +41,7 @@ export function resolveHarnessPaths(options = {}) {
       skillsDir: join(codexHome, 'skills'),
       mcpFile: join(codexHome, 'config.toml'),
       mcpFormat: 'toml',
+      instructionsFile: join(codexHome, 'AGENTS.md'),
     },
     'claude-code': resolveClaudeCodePaths(home, explicitClaudeConfigDir),
     antigravity: {
@@ -49,11 +51,13 @@ export function resolveHarnessPaths(options = {}) {
       legacyMcpFile: join(home, '.gemini', 'settings.json'),
       mcpFormat: 'json-antigravity',
       pluginsDir: join(home, '.gemini', 'config', 'plugins'),
+      instructionsFile: join(home, '.gemini', 'AGENTS.md'),
     },
     dsh: {
       skillsDir: join(dshHome, 'skills'),
       mcpFile: null,
       mcpFormat: 'none',
+      instructionsFile: join(dshHome, 'AGENTS.md'),
     },
   };
 }

@@ -593,8 +593,9 @@
 .ap-section > .ap-help { margin: -4px 0 10px; }
 .ap-advanced summary {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 4px 8px;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -667,6 +668,7 @@
   border: 1px solid var(--ap-line);
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
   overflow-x: auto;
 }
 
@@ -802,9 +804,112 @@
   gap: 4px 6px;
 }
 
+.ap-instr-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ap-instr-overview,
+.ap-instr-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ap-instr-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+}
+.ap-instr-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+}
+.ap-instr-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ap-instr-chip {
+  appearance: none;
+  background: transparent;
+  color: var(--ap-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.ap-instr-chip:hover {
+  border-color: color-mix(in srgb, var(--ap-accent) 55%, var(--ap-line));
+}
+.ap-instr-chip.is-selected {
+  border-color: var(--ap-accent);
+  background: color-mix(in srgb, var(--ap-accent) 12%, transparent);
+}
+.ap-instr-import-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ap-instr-import-select {
+  width: auto;
+  min-width: 156px;
+}
+.ap-instr-harness-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ap-instr-editor {
+  min-height: 170px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+.ap-instr-editor-private {
+  min-height: 130px;
+}
+.ap-instr-foot {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 12px;
+  font-size: 12px;
+  color: var(--ap-muted);
+}
+.ap-instr-warn-text {
+  color: var(--ap-warn);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ap-instr-preview-box {
+  margin-top: 4px;
+}
+.ap-instr-preview {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--ap-line);
+  background: color-mix(in srgb, var(--ap-text) 3%, transparent);
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 @media (max-width: 720px) {
   .ap-doctor-switcher {
     flex: 1 1 160px;
+  }
+  .ap-instr-import-bar {
+    width: 100%;
+  }
+  .ap-instr-import-select {
+    flex: 1 1 150px;
   }
   .ap-inspect-row {
     flex-direction: column;

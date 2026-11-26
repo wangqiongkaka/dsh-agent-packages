@@ -5,6 +5,12 @@ import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
 import { applyPackageAction, defaultExecFile, defaultRunShell, probeSharedCliVersion } from './installer.mjs';
 import { analyzeRepoWithHarness, defaultSpawnWithInput, listAnalyzerModels } from './repo-analyzer.mjs';
 import { readInstalledPlugins, scanLocalEnvironment } from './scanner.mjs';
+import {
+  InstructionsStore,
+  buildInstructionsState,
+  importInstructionFromHarness,
+  syncInstructions,
+} from './instructions.mjs';
 import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
@@ -26,6 +32,7 @@ export class PackageManagerService {
     if (!options.root) throw new Error('必须提供配置保存目录 root');
     this.root = options.root;
     this.store = new PackageStore(this.root);
+    this.instructionsStore = new InstructionsStore(this.root);
     const staticClaudeConfigDir = typeof options.claudeConfigDir === 'string' ? options.claudeConfigDir.trim() : '';
     this.harnessPaths = resolveHarnessPaths({
       homeDir: options.homeDir,
@@ -65,6 +72,8 @@ export class PackageManagerService {
     await this.store.init();
     await this.store.readManifest();
     await this.store.readLock();
+    await this.instructionsStore.init();
+    await this.instructionsStore.readConfig();
   }
 
   async state() {
@@ -73,6 +82,10 @@ export class PackageManagerService {
       this.store.readLock(),
       this.currentHarnessPaths(),
     ]);
+    const instructions = await buildInstructionsState({
+      store: this.instructionsStore,
+      harnessPaths,
+    });
     const hasPlugins = manifest.packages.some(p => p.kind === 'plugin');
     const livePlugins = hasPlugins ? await readInstalledPlugins(harnessPaths) : {};
     let outdatedCount = 0;
@@ -132,6 +145,7 @@ export class PackageManagerService {
         ...HARNESS_META[id],
         skillsDir: harnessPaths[id].skillsDir,
         mcpFile: harnessPaths[id].mcpFile,
+        instructionsFile: harnessPaths[id].instructionsFile,
       })),
       summary: {
         total: packages.length,
@@ -140,6 +154,7 @@ export class PackageManagerService {
         pendingInstall: pendingInstallCount,
       },
       packages,
+      instructions,
     };
   }
 
@@ -570,6 +585,102 @@ export class PackageManagerService {
           dryRun,
           steps: allSteps,
           state: await this.state(),
+        };
+      }
+
+      case 'instructions.save': {
+        const dryRun = Boolean(input.dryRun);
+        await this.instructionsStore.saveAll({
+          shared: input.shared,
+          harnesses: input.harnesses,
+        });
+        let steps = [];
+        if (input.syncNow) {
+          const result = await syncInstructions({
+            store: this.instructionsStore,
+            harnessPaths: await currentPaths(),
+            harnesses: Array.isArray(input.targetHarnesses) ? input.targetHarnesses : undefined,
+            dryRun,
+          });
+          steps = result.steps;
+        }
+        const errorCount = steps.filter(s => s.status === 'error').length;
+        const message = !input.syncNow
+          ? '已保存全局指令内容'
+          : dryRun
+            ? `已保存内容并生成同步预览（${steps.length} 端）`
+            : errorCount
+              ? `已保存内容，同步存在 ${errorCount} 个失败项，请查看下方日志`
+              : `已保存并同步指令文件（${steps.filter(s => s.status === 'ok').length}/${steps.length} 端）`;
+        return {
+          message,
+          dryRun,
+          steps,
+          state: await this.state(),
+        };
+      }
+
+      case 'instructions.sync': {
+        const dryRun = Boolean(input.dryRun);
+        const result = await syncInstructions({
+          store: this.instructionsStore,
+          harnessPaths: await currentPaths(),
+          harnesses: Array.isArray(input.harnesses) ? input.harnesses : undefined,
+          dryRun,
+          draft: input.draft ?? null,
+        });
+        const errorCount = result.steps.filter(s => s.status === 'error').length;
+        const okCount = result.steps.filter(s => s.status === 'ok').length;
+        const message = dryRun
+          ? `指令同步预览完成（涉及 ${result.steps.length} 端）`
+          : errorCount
+            ? `指令同步结束，其中 ${errorCount} 端失败，请查看下方日志`
+            : `指令同步完成（${okCount}/${result.steps.length} 端）`;
+        return {
+          message,
+          dryRun,
+          steps: result.steps,
+          state: await this.state(),
+        };
+      }
+
+      case 'instructions.import': {
+        const harnessId = typeof input.harness === 'string' ? input.harness.trim() : '';
+        const target = input.target === 'private' ? 'private' : 'shared';
+        if (!HARNESS_IDS.includes(harnessId)) {
+          throw new HttpError(400, `不支持的 Harness：${harnessId || '空'}`);
+        }
+        let imported;
+        try {
+          imported = await importInstructionFromHarness({
+            harnessId,
+            harnessPaths: await currentPaths(),
+          });
+        } catch (error) {
+          throw new HttpError(error.message.includes('不存在') ? 404 : 400, error.message);
+        }
+
+        let nextState;
+        if (input.save) {
+          if (target === 'shared') {
+            await this.instructionsStore.saveAll({ shared: imported.content });
+          } else {
+            await this.instructionsStore.saveAll({
+              harnesses: { [harnessId]: { privateContent: imported.content } },
+            });
+          }
+          nextState = await this.state();
+        }
+        const label = HARNESS_META[harnessId].label;
+        const targetLabel = target === 'shared' ? '公共内容' : `${label} 私有内容`;
+        const strippedNote = imported.strippedBlocks.length
+          ? `（已跳过外部标记块 ${imported.strippedBlocks.join('、')}，同步时会自动保留）`
+          : '';
+        return {
+          message: `已从 ${label}（${HARNESS_META[harnessId].instructionsFileName}）导入到${targetLabel}${strippedNote}`,
+          target,
+          ...imported,
+          ...(nextState ? { state: nextState } : {}),
         };
       }
 

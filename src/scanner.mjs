@@ -233,6 +233,7 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       plugins: pluginList,
       skillsDir: paths.skillsDir,
       mcpFile: paths.mcpFile,
+      instructionsFile: paths.instructionsFile,
       skillsCount: enrichedSkills.length,
       mcpCount: mcpList.length,
       skills: enrichedSkills,

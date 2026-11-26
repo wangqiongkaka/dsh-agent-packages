@@ -44,6 +44,20 @@ try {
   // 造一点本机扫描夹具数据（仅在临时目录，不碰真实本机配置）
   await mkdir(join(homeDir, '.codex'), { recursive: true });
   await writeFile(join(homeDir, '.codex', 'config.toml'), 'model = "gpt-6.2-sol"\n\n[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve"]\n');
+  await writeFile(join(homeDir, '.codex', 'AGENTS.md'), [
+    '# 全局协作规则',
+    '',
+    '- 所有回复使用中文。',
+    '- 改动前先核对直接调用方。',
+    '',
+    '<!-- CODEGRAPH_START -->',
+    '## CodeGraph',
+    'Use codegraph_explore before grep.',
+    '<!-- CODEGRAPH_END -->',
+    '',
+  ].join('\n'));
+  await mkdir(dshHome, { recursive: true });
+  await symlink(join(homeDir, '.codex', 'AGENTS.md'), join(dshHome, 'AGENTS.md'));
   await writeFile(join(homeDir, '.codex', 'models_cache.json'), JSON.stringify({
     models: [
       { slug: 'gpt-6.2-sol', display_name: 'GPT-6.2-Sol', visibility: 'list' },
@@ -378,10 +392,34 @@ try {
   await page.getByRole('menuitem', { name: '卸载并移除' }).waitFor();
   await page.keyboard.press('Escape');
 
+  // 2b. 全局指令维护：导入现有内容、编辑私有内容、查看合并预览与外部标记块保留、软链拆分同步
+  await page.getByRole('tab', { name: '全局指令' }).click();
+  await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).waitFor();
+  await page.getByRole('button', { name: '导入到公共' }).click();
+  await page.getByText(/已跳过外部标记块 CODEGRAPH/).waitFor();
+  assert.match(await page.locator('#ap-instr-shared').inputValue(), /# 全局协作规则/);
+  assert.doesNotMatch(await page.locator('#ap-instr-shared').inputValue(), /CODEGRAPH_START/);
+  await page.locator('#ap-instr-private').fill('## Codex 私有规则\n- 优先运行最小单测验证');
+  // 最终写入预览实时包含公共 + 私有 + 外部块 CODEGRAPH
+  const codexPreview = await page.locator('.ap-instr-preview').innerText();
+  assert.match(codexPreview, /# 全局协作规则/);
+  assert.match(codexPreview, /## Codex 私有规则/);
+  assert.match(codexPreview, /<!-- CODEGRAPH_START -->/);
+  await page.screenshot({ path: 'artifacts/packages-instructions.png', fullPage: true });
+
+  // 切换到 DSH 原生（软链目标），验证软链提示并保存同步全部
+  await page.locator('#ap-instr-harness').click();
+  await page.getByRole('option', { name: /DSH 原生/ }).click();
+  await page.getByText(/同步时将拆分为独立文件写入/).waitFor();
+  await page.locator('#ap-instr-private').fill('## DSH 原生私有规则\n- 简短汇报执行进展');
+  await page.getByRole('button', { name: '保存并同步全部' }).click();
+  await page.getByText(/已保存并同步指令文件/).waitFor();
+  assert.equal(await page.getByText(/同步时将拆分为独立文件写入/).count(), 0, '同步后软链应已拆分为独立文件');
+
   // 3. 切换本机诊断，验证只读告警与单 Harness 下拉框切换；本机导入已移除
   await page.getByRole('tab', { name: '本机诊断' }).click();
   await page.getByText(/检测到旧版目录/).waitFor();
-  await page.getByText('codegraph').waitFor();
+  await page.locator('.ap-doctor-card').getByText('codegraph').waitFor();
   assert.equal(await page.locator('.ap-doctor-card').count(), 1, '本机诊断一次应仅展示一个 Harness 卡片');
   assert.match(await page.locator('#ap-doctor-harness').innerText(), /Codex/);
   assert.equal(await page.getByRole('button', { name: '导入清单' }).count(), 0);
@@ -393,13 +431,18 @@ try {
   await page.getByRole('option', { name: /DSH 原生/ }).click();
   assert.equal(await page.locator('.ap-doctor-card').count(), 1);
   assert.match(await page.locator('#ap-doctor-harness').innerText(), /DSH 原生/);
-  assert.equal(await page.getByText('codegraph').count(), 0, '切换到 DSH 原生后不应再显示 Codex 的 MCP');
+  assert.equal(await page.locator('.ap-doctor-card').getByText('codegraph').count(), 0, '切换到 DSH 原生后不应再显示 Codex 的 MCP');
   await page.getByText('该端暂无已配置的 MCP Server 或已装插件。').waitFor();
 
-  // 4. 窄屏移动端检查无横向溢出（涵盖本机诊断与包清单）
+  // 4. 窄屏移动端检查无横向溢出（涵盖本机诊断、全局指令与包清单）
   await page.setViewportSize({ width: 390, height: 844 });
   const doctorOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(doctorOverflow <= 2, `移动端本机诊断页出现横向溢出：${doctorOverflow}px`);
+  await page.getByRole('tab', { name: '全局指令' }).click();
+  await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).waitFor();
+  const instrOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(instrOverflow <= 2, `移动端全局指令页出现横向溢出：${instrOverflow}px`);
+  await page.screenshot({ path: 'artifacts/packages-instructions-mobile.png', fullPage: true });
   await page.getByRole('tab', { name: /包清单/ }).click();
   await page.getByText('Firecrawl Skills').waitFor();
   // 验证包清单筛选自定义下拉框可展开与筛选
