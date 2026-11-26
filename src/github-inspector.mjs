@@ -49,16 +49,77 @@ function detectHarnessFromContext(text) {
   const hits = new Set();
   if (/\bcodex\b/.test(lower)) hits.add('codex');
   if (/\bclaude\b|\bclaude[\s-]code\b/.test(lower)) hits.add('claude-code');
-  if (/\bantigravity\b|\bagy\b|\bgemini\b/.test(lower)) hits.add('antigravity');
+  if (/\bantigravity\b|\bagy\b/.test(lower)) hits.add('antigravity');
   if (/\bdsh\b|deepseek[\s-]harness/.test(lower)) hits.add('dsh');
   return [...hits];
 }
 
-export function extractInstallCommandsFromReadme(readmeText) {
-  if (!readmeText) return { perHarness: {}, generic: [] };
+const GENERIC_CLI_COMMANDS = new Set([
+  'npm', 'npx', 'pnpm', 'yarn', 'bun', 'uv', 'uvx', 'pip', 'pipx', 'brew',
+  'curl', 'wget', 'git', 'claude', 'codex', 'agy', 'dsh', 'sh', 'bash', 'zsh',
+  'sudo', 'irm', 'iex', 'cd', 'mkdir', 'rm', 'cp', 'mv', 'ls', 'cat', 'echo', 'export',
+]);
+
+const INTERNAL_SKILL_DIR_RE = /^\.(?:claude|cursor|codex|gemini|github|vscode|windsurf|kiro)\//i;
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripShellComment(line) {
+  return line.replace(/\s+#(?:\s.*)?$/, '').trim();
+}
+
+function detectCliBin(packageJson, readmeText = '') {
+  const bin = packageJson?.bin;
+  if (typeof bin === 'string' && bin.trim()) {
+    const rawName = String(packageJson?.name ?? '').replace(/^@[^/]+\//, '').trim();
+    if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(rawName)) return rawName;
+  } else if (bin && typeof bin === 'object' && !Array.isArray(bin)) {
+    for (const key of Object.keys(bin)) {
+      if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key)) return key;
+    }
+  }
+  // 无 package.json bin 时，从 README 代码块里找同时出现 install / upgrade / uninstall 的自有 CLI
+  if (!readmeText) return '';
+  const counts = new Map();
+  const re = /^\s*(?:\$\s+)?([A-Za-z][A-Za-z0-9._-]*)\s+(install|upgrade|uninstall)\b/gm;
+  let m;
+  while ((m = re.exec(readmeText)) !== null) {
+    const cmd = m[1].toLowerCase();
+    if (GENERIC_CLI_COMMANDS.has(cmd)) continue;
+    const set = counts.get(cmd) ?? new Set();
+    set.add(m[2].toLowerCase());
+    counts.set(cmd, set);
+  }
+  for (const [cmd, verbs] of counts.entries()) {
+    if (verbs.size >= 2) return cmd;
+  }
+  return '';
+}
+
+export function extractInstallCommandsFromReadme(readmeText, options = {}) {
+  const cliBin = typeof options.cliBin === 'string' ? options.cliBin.trim() : '';
+  const empty = {
+    perHarness: {},
+    generic: [],
+    cliInstall: '',
+    cliUpgrade: '',
+    agentSetup: '',
+    agentUninstall: '',
+    flags: { target: false, yes: false, keepCli: false },
+    mentionedHarnesses: [],
+  };
+  if (!readmeText) return empty;
   const perHarness = {};
   const generic = [];
-  const blockRegex = /(^|\n)(#{1,6}\s+[^\n]+)?[\s\S]{0,180}?```(?:sh|bash|zsh|shell|console)?\n([\s\S]*?)```/gi;
+  const cliInstallCandidates = [];
+  let cliUpgrade = '';
+  let agentSetup = '';
+  let agentUninstall = '';
+  const cliPrefixRe = cliBin ? new RegExp(`^${escapeRegex(cliBin)}\\b`) : null;
+
+  const blockRegex = /(^|\n)(#{1,6}\s+[^\n]+)?[\s\S]{0,220}?```(?:sh|bash|zsh|shell|console)?\n([\s\S]*?)```/gi;
   let match;
   while ((match = blockRegex.exec(readmeText)) !== null) {
     const heading = match[2] ?? '';
@@ -66,11 +127,37 @@ export function extractInstallCommandsFromReadme(readmeText) {
     const headingHarnesses = detectHarnessFromContext(heading);
     const lines = block
       .split(/\r?\n/)
-      .map(line => line.trim().replace(/^\$\s+/, ''))
+      .map(line => stripShellComment(line.trim().replace(/^\$\s+/, '')))
       .filter(line => line && !line.startsWith('#'));
 
     for (const line of lines) {
-      if (!/^(npx|npm|pnpm|uvx|pip|pipx|brew|curl|git|claude|codex|agy|dsh)\b/.test(line)) continue;
+      const isKnownStarter = /^(npx|npm|pnpm|bun|uvx|uv|pip|pipx|brew|curl|wget|git|claude|codex|agy|dsh)\b/.test(line);
+      const isCliStarter = Boolean(cliPrefixRe && cliPrefixRe.test(line));
+      if (!isKnownStarter && !isCliStarter) continue;
+
+      if (isCliStarter) {
+        const sub = line.slice(cliBin.length).trim();
+        if (/^(install|setup)(?:\s|$)/i.test(sub) && !/--(help|print-config|check)\b/.test(sub) && !/<[^>]+>|\[[^\]]+\]/.test(sub)) {
+          if (!agentSetup) agentSetup = line;
+          continue;
+        }
+        if (/^(upgrade|update)(?:\s|$)/i.test(sub) && !/--(help|check)\b/.test(sub)) {
+          if (!cliUpgrade) {
+            if (/\[version\]|<version>/i.test(sub)) {
+              cliUpgrade = `${cliBin} upgrade {{version}}`;
+            } else if (!/<[^>]+>|\[[^\]]+\]/.test(sub)) {
+              cliUpgrade = line;
+            }
+          }
+          continue;
+        }
+        if (/^uninstall(?:\s|$)/i.test(sub) && !/--help\b/.test(sub) && !/<[^>]+>|\[[^\]]+\]/.test(sub)) {
+          if (!agentUninstall) agentUninstall = line;
+          continue;
+        }
+        continue;
+      }
+
       if (/^claude\s+(mcp|plugin)\s+/i.test(line)) {
         perHarness['claude-code'] ??= line;
         continue;
@@ -87,6 +174,16 @@ export function extractInstallCommandsFromReadme(readmeText) {
         perHarness.dsh ??= line;
         continue;
       }
+
+      // CLI 本体安装命令候选（官方脚本优先，其次 brew，其次 npm/pnpm/pipx/uv 全局安装）
+      if (/^(?:curl|wget)\b[^|]+\|\s*(?:ba|z)?sh\b/i.test(line) && !/--uninstall\b/i.test(line)) {
+        cliInstallCandidates.push({ priority: 1, cmd: line });
+      } else if (/^brew\s+install\s+/i.test(line)) {
+        cliInstallCandidates.push({ priority: 2, cmd: line });
+      } else if (/^(?:npm\s+(?:i|install)\s+(?:-g|--global)|pnpm\s+(?:add|i)\s+-g|bun\s+(?:add|i)\s+-g|pipx\s+install|uv\s+tool\s+install)\b/i.test(line)) {
+        cliInstallCandidates.push({ priority: 3, cmd: line });
+      }
+
       const lineHarnesses = detectHarnessFromContext(line);
       const targets = lineHarnesses.length ? lineHarnesses : headingHarnesses;
       if (targets.length === 1) {
@@ -96,7 +193,42 @@ export function extractInstallCommandsFromReadme(readmeText) {
       }
     }
   }
-  return { perHarness, generic };
+
+  // README 内联文案中提到 `<cli> upgrade [version]` 或 `<cli> upgrade <version>` 时补充版本占位
+  if (cliBin) {
+    const esc = escapeRegex(cliBin);
+    const acceptsVersion = new RegExp(`${esc}\\s+upgrade\\s+(?:\\[version\\]|<version>)`, 'i').test(readmeText);
+    if (!cliUpgrade && new RegExp('`' + esc + '\\s+upgrade\\b', 'i').test(readmeText)) {
+      cliUpgrade = acceptsVersion ? `${cliBin} upgrade {{version}}` : `${cliBin} upgrade`;
+    } else if (cliUpgrade && acceptsVersion && !cliUpgrade.includes('{{version}}')) {
+      cliUpgrade = `${cliUpgrade} {{version}}`;
+    }
+  }
+
+  cliInstallCandidates.sort((a, b) => a.priority - b.priority);
+  const cliInstall = cliInstallCandidates[0]?.cmd || '';
+
+  const flags = {
+    target: /(?:--target\b|-t,\s*--target\b)/.test(readmeText),
+    yes: /(?:--yes\b|-y,\s*--yes\b)/.test(readmeText),
+    keepCli: /--keep-cli\b/.test(readmeText),
+  };
+
+  // 从「Supported Agents」或安装说明段落提取支持的 Harness
+  const agentsSectionMatch = /(^|\n)##\s+Supported\s+Agents[\s\S]*?(?=\n##\s+|$)/i.exec(readmeText);
+  const mentionScope = agentsSectionMatch ? agentsSectionMatch[0] : readmeText;
+  const mentionedHarnesses = HARNESS_IDS.filter(id => detectHarnessFromContext(mentionScope).includes(id));
+
+  return {
+    perHarness,
+    generic,
+    cliInstall,
+    cliUpgrade,
+    agentSetup,
+    agentUninstall,
+    flags,
+    mentionedHarnesses,
+  };
 }
 
 function parsePyprojectPackage(tomlText) {
@@ -185,18 +317,33 @@ export function inferPackageFromRepoMeta({
   hookFiles = {},
 }) {
   const plugin = detectPlugin({ slug, manifests: pluginManifests, hookFiles });
-  const skillNames = [];
+  const cliBin = detectCliBin(packageJson, readme);
+  const hasInstallScript = treePaths.some(p => /^install\.(sh|bash)$/i.test(p));
+  const hasPackageBin = Boolean(
+    (typeof packageJson?.bin === 'string' && packageJson.bin.trim()) ||
+    (packageJson?.bin && typeof packageJson.bin === 'object' && Object.keys(packageJson.bin).length > 0)
+  );
+  const hasCliProject = Boolean(cliBin || hasInstallScript || hasPackageBin);
+
+  const publicSkillNames = [];
+  const internalSkillNames = [];
   for (const filePath of treePaths) {
+    let skillName = '';
     if (filePath === 'SKILL.md') {
-      skillNames.push(slugifyId(slug.repo));
+      skillName = slugifyId(slug.repo);
     } else if (/\/SKILL\.md$/.test(filePath)) {
       const segments = filePath.split('/');
       const skillDir = segments[segments.length - 2];
-      if (skillDir && !skillDir.startsWith('.') && !skillNames.includes(skillDir)) {
-        skillNames.push(skillDir);
-      }
+      if (skillDir && !skillDir.startsWith('.')) skillName = skillDir;
     }
+    if (!skillName) continue;
+    const bucket = INTERNAL_SKILL_DIR_RE.test(filePath) ? internalSkillNames : publicSkillNames;
+    if (!bucket.includes(skillName)) bucket.push(skillName);
   }
+  // CLI 工具仓库中仅存在于 .claude/skills 等隐藏目录的 SKILL.md 属于项目自用开发技能，不作为对外分发 Skills
+  const skillNames = publicSkillNames.length > 0
+    ? publicSkillNames
+    : (hasCliProject ? [] : internalSkillNames);
 
   const pkgDeps = {
     ...(packageJson?.dependencies ?? {}),
@@ -208,12 +355,22 @@ export function inferPackageFromRepoMeta({
   const hasNpmMcp = Boolean(
     pkgDeps['@modelcontextprotocol/sdk'] ||
     pkgDeps['fastmcp'] ||
-    (npmName && /mcp/i.test(npmName) && (packageJson?.bin || /mcp/i.test(packageJson?.description ?? '')))
+    (npmName && /mcp/i.test(npmName) && (hasPackageBin || /mcp/i.test(packageJson?.description ?? '')))
   );
+  const publishableNpmName = npmName && !packageJson?.private && (hasNpmMcp || hasPackageBin) ? npmName : '';
   const pyInfo = parsePyprojectPackage(pyprojectToml);
   const hasPyMcp = Boolean(pyInfo?.name && pyInfo.hasMcp);
-  const extracted = extractInstallCommandsFromReadme(readme);
-  const hasPerHarnessInstaller = Object.keys(extracted.perHarness).length > 0;
+  const extracted = extractInstallCommandsFromReadme(readme, { cliBin });
+
+  // 从仓库 installer/targets/<id> 文件精确识别各 Harness 的 target ID（如 claude vs claude-code）
+  const repoTargetIds = {};
+  for (const filePath of treePaths) {
+    const m = /(?:^|\/)targets\/(codex|claude-code|claude|antigravity|dsh)\.[jt]sx?$/i.exec(filePath);
+    if (!m) continue;
+    const raw = m[1].toLowerCase();
+    const harnessId = raw === 'claude' ? 'claude-code' : raw;
+    repoTargetIds[harnessId] ??= raw;
+  }
 
   let kind = 'installer';
   if (plugin) {
@@ -235,10 +392,10 @@ export function inferPackageFromRepoMeta({
   const version = plugin
     ? (plugin.version || releaseTag.replace(/^v/, ''))
     : (hasNpmMcp && npmVersion)
-    ? npmVersion
-    : (hasPyMcp && pyInfo.version)
-      ? pyInfo.version
-      : releaseTag.replace(/^v/, '');
+      ? npmVersion
+      : (hasPyMcp && pyInfo.version)
+        ? pyInfo.version
+        : (releaseTag.replace(/^v/, '') || npmVersion);
 
   const commands = {};
   // 插件类型由内置适配器调用各端插件命令；README 里零散的单行命令不完整，不带入草稿
@@ -247,9 +404,62 @@ export function inferPackageFromRepoMeta({
       commands[harnessId] = { install: extracted.perHarness[harnessId] };
     }
   }
-  if (kind === 'installer' && Object.keys(commands).length === 0 && extracted.generic.length > 0) {
-    for (const harnessId of ['codex', 'claude-code', 'antigravity']) {
-      commands[harnessId] = { install: extracted.generic[0] };
+
+  const installerHarnesses = Object.keys(repoTargetIds).length > 0
+    ? HARNESS_IDS.filter(id => id in repoTargetIds)
+    : extracted.mentionedHarnesses.length > 0
+      ? extracted.mentionedHarnesses
+      : ['codex', 'claude-code', 'antigravity'];
+
+  if (kind === 'installer' && Object.keys(commands).length === 0) {
+    const fallbackCliInstall = extracted.cliInstall ||
+      (publishableNpmName ? `npm install -g ${publishableNpmName}${version ? '@{{version}}' : ''}` : '');
+    const cliVersionCmd = cliBin && (hasPackageBin || new RegExp(`\\b${escapeRegex(cliBin)}\\s+(?:--version|version)\\b`).test(readme))
+      ? `${cliBin} --version`
+      : '';
+    const supportsPerTargetCli = Boolean(
+      extracted.agentSetup &&
+      extracted.flags.yes &&
+      (extracted.flags.target || Object.keys(repoTargetIds).length > 0)
+    );
+
+    if (supportsPerTargetCli) {
+      const defaultTargetMap = { codex: 'codex', 'claude-code': 'claude', antigravity: 'antigravity', dsh: 'dsh' };
+      const shared = {};
+      if (fallbackCliInstall) shared.install = fallbackCliInstall;
+      if (extracted.cliUpgrade) shared.upgrade = extracted.cliUpgrade;
+      if (extracted.agentUninstall) shared.uninstall = `${extracted.agentUninstall} --yes`;
+      if (cliVersionCmd) shared.version = cliVersionCmd;
+      if (Object.keys(shared).length > 0) commands.shared = shared;
+
+      for (const harnessId of installerHarnesses) {
+        const targetFlag = repoTargetIds[harnessId] || defaultTargetMap[harnessId] || harnessId;
+        const entry = {
+          install: `${extracted.agentSetup} --target ${targetFlag} --yes`,
+        };
+        if (extracted.agentUninstall) {
+          entry.uninstall = `${extracted.agentUninstall} --target ${targetFlag} --yes${extracted.flags.keepCli ? ' --keep-cli' : ''}`;
+        }
+        commands[harnessId] = entry;
+      }
+    } else if (fallbackCliInstall || extracted.agentSetup) {
+      const shared = {};
+      const setupCmd = extracted.agentSetup
+        ? `${extracted.agentSetup}${extracted.flags.yes ? ' --yes' : ''}`
+        : '';
+      if (fallbackCliInstall && setupCmd) {
+        shared.install = `${fallbackCliInstall} && ${setupCmd}`;
+      } else {
+        shared.install = fallbackCliInstall || setupCmd;
+      }
+      if (extracted.cliUpgrade) shared.upgrade = extracted.cliUpgrade;
+      if (extracted.agentUninstall) {
+        shared.uninstall = `${extracted.agentUninstall}${extracted.flags.yes ? ' --yes' : ''}`;
+      }
+      if (cliVersionCmd) shared.version = cliVersionCmd;
+      if (Object.keys(shared).length > 0) commands.shared = shared;
+    } else if (extracted.generic.length > 0) {
+      commands.shared = { install: extracted.generic[0] };
     }
   }
 
@@ -281,7 +491,9 @@ export function inferPackageFromRepoMeta({
     ? plugin.harnesses
     : kind === 'mcp'
       ? ['codex', 'claude-code', 'antigravity']
-      : ['codex', 'claude-code', 'antigravity', 'dsh'];
+      : kind === 'installer'
+        ? installerHarnesses
+        : ['codex', 'claude-code', 'antigravity', 'dsh'];
 
   return {
     draft: {
@@ -292,7 +504,7 @@ export function inferPackageFromRepoMeta({
       description: String(repoInfo?.description || packageJson?.description || '').trim(),
       ref: releaseTag || defaultBranch,
       version,
-      npmPackage: hasNpmMcp ? npmName : '',
+      npmPackage: publishableNpmName,
       targets,
       skills: {
         include: [],
@@ -304,11 +516,12 @@ export function inferPackageFromRepoMeta({
     },
     evidence: {
       plugin,
+      cliBin: cliBin || null,
       defaultBranch,
       latestRelease: releaseTag || null,
       latestCommit: commitSha || null,
       discoveredSkills: skillNames,
-      npmPackage: hasNpmMcp ? npmName : null,
+      npmPackage: publishableNpmName || null,
       pythonPackage: hasPyMcp ? pyInfo.name : null,
       readmeCommands: extracted,
     },

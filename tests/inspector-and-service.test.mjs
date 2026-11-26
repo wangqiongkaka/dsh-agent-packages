@@ -764,3 +764,256 @@ test('未锁定版本的插件也能从本机各端实时读回版本号并参�
   assert.equal(after.lock.latestVersion, '5.4.0');
   assert.equal(after.lock.updateAvailable, true);
 });
+
+test('自带 CLI 与多端安装器的仓库（如 codegraph）：不误判开发自用 .claude/skills，自动生成全局与分端命令', () => {
+  const codegraphReadme = [
+    '# CodeGraph',
+    'Already installed? Run `codegraph upgrade`',
+    '## Get Started',
+    '### 1. Install the CLI',
+    '```bash',
+    'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh',
+    '```',
+    '<details>',
+    '```bash',
+    'npm i -g @colbymchenry/codegraph',
+    '```',
+    '</details>',
+    '### 2. Wire up your agent(s)',
+    '```bash',
+    'codegraph install',
+    '```',
+    '### Uninstall',
+    '```bash',
+    'codegraph uninstall',
+    '```',
+    'Pass `--keep-cli` to remove only the agent configurations and keep the CLI installed.',
+    'Use `--target` to remove from specific agents, or `--yes` to run non-interactively.',
+    '## CLI Reference',
+    '```bash',
+    'codegraph upgrade [version]  # Update to the latest release',
+    'codegraph version            # Print installed version',
+    '```',
+    '## Supported Agents',
+    '- **Claude Code**',
+    '- **Codex CLI**',
+    '- **Antigravity IDE**',
+    '- **DeepSeek Harness** (`dsh`)',
+  ].join('\n');
+
+  const { draft, evidence } = inferPackageFromRepoMeta({
+    slug: { owner: 'colbymchenry', repo: 'codegraph' },
+    repoUrl: 'https://github.com/colbymchenry/codegraph',
+    repoInfo: { name: 'codegraph', default_branch: 'main', description: 'Semantic code intelligence' },
+    latestRelease: { tag_name: 'v1.6.4' },
+    treePaths: [
+      'README.md',
+      'package.json',
+      'install.sh',
+      '.claude/skills/add-lang/SKILL.md',
+      '.claude/skills/agent-eval/SKILL.md',
+      'src/installer/targets/claude.ts',
+      'src/installer/targets/codex.ts',
+      'src/installer/targets/antigravity.ts',
+      'src/installer/targets/dsh.ts',
+    ],
+    packageJson: {
+      name: '@colbymchenry/codegraph',
+      version: '1.6.4',
+      bin: { codegraph: './dist/bin/codegraph.js' },
+      dependencies: { commander: '^14.0.0' },
+    },
+    readme: codegraphReadme,
+  });
+
+  assert.equal(draft.kind, 'installer');
+  assert.equal(draft.npmPackage, '@colbymchenry/codegraph');
+  assert.equal(draft.version, '1.6.4');
+  assert.equal(draft.ref, 'v1.6.4');
+  assert.deepEqual(evidence.discoveredSkills, [], 'CLI 工具仓库自用的 .claude/skills 不应误判为对外分发 Skills');
+  assert.equal(evidence.cliBin, 'codegraph');
+  assert.equal(evidence.npmPackage, '@colbymchenry/codegraph');
+  assert.deepEqual(draft.targets, ['codex', 'claude-code', 'antigravity', 'dsh']);
+  assert.deepEqual(draft.commands.shared, {
+    install: 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh',
+    upgrade: 'codegraph upgrade {{version}}',
+    uninstall: 'codegraph uninstall --yes',
+    version: 'codegraph --version',
+  });
+  assert.deepEqual(draft.commands.codex, {
+    install: 'codegraph install --target codex --yes',
+    uninstall: 'codegraph uninstall --target codex --yes --keep-cli',
+  });
+  assert.deepEqual(draft.commands['claude-code'], {
+    install: 'codegraph install --target claude --yes',
+    uninstall: 'codegraph uninstall --target claude --yes --keep-cli',
+  });
+  assert.deepEqual(draft.commands.antigravity, {
+    install: 'codegraph install --target antigravity --yes',
+    uninstall: 'codegraph uninstall --target antigravity --yes --keep-cli',
+  });
+  assert.deepEqual(draft.commands.dsh, {
+    install: 'codegraph install --target dsh --yes',
+    uninstall: 'codegraph uninstall --target dsh --yes --keep-cli',
+  });
+
+  // 通用无 --target 拆端的 CLI 安装器：合并进全局命令，避免重复跑多遍
+  const globalOnly = inferPackageFromRepoMeta({
+    slug: { owner: 'acme', repo: 'agent-kit' },
+    repoUrl: 'https://github.com/acme/agent-kit',
+    repoInfo: { name: 'agent-kit', default_branch: 'main' },
+    latestRelease: { tag_name: 'v0.3.0' },
+    treePaths: ['README.md', 'package.json', '.claude/skills/internal-helper/SKILL.md'],
+    packageJson: { name: 'agent-kit', version: '0.3.0', bin: { 'agent-kit': './cli.js' } },
+    readme: '# Agent Kit\n```bash\nnpm i -g agent-kit\nagent-kit setup\n```\nSupports Claude Code and Codex.\n',
+  });
+  assert.equal(globalOnly.draft.kind, 'installer');
+  assert.equal(globalOnly.draft.commands.shared.install, 'npm i -g agent-kit && agent-kit setup');
+  assert.equal(globalOnly.draft.commands.shared.version, 'agent-kit --version');
+  assert.deepEqual(globalOnly.draft.targets, ['codex', 'claude-code']);
+
+  // 非 CLI 项目的纯 .claude/skills 仓库仍可兼容识别为 skills-repo
+  const pureHiddenSkills = inferPackageFromRepoMeta({
+    slug: { owner: 'user', repo: 'claude-skills' },
+    repoUrl: 'https://github.com/user/claude-skills',
+    repoInfo: { name: 'claude-skills', default_branch: 'main' },
+    treePaths: ['README.md', '.claude/skills/my-skill/SKILL.md'],
+  });
+  assert.equal(pureHiddenSkills.draft.kind, 'skills-repo');
+  assert.deepEqual(pureHiddenSkills.evidence.discoveredSkills, ['my-skill']);
+});
+
+test('带全局 CLI 命令的安装器端到端：全局命令只跑一次、版本探测、升级、单端/全端卸载与失败短路', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-cli-installer-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const homeDir = join(base, 'home');
+  const dshHome = join(homeDir, '.dsh');
+  const claudeConfigDir = join(homeDir, '.rec', 'claude', 'accounts', '3001', 'config');
+
+  let currentCliVersion = '1.5.0';
+  let failShared = false;
+  const calls = [];
+  const runShell = async (command, options) => {
+    calls.push({ command, claudeConfigDir: options?.env?.CLAUDE_CONFIG_DIR });
+    if (command === 'codegraph --version') return { stdout: `${currentCliVersion}\n`, stderr: '' };
+    if (failShared && command.includes('install.sh')) throw new Error('network error');
+    if (command.startsWith('codegraph upgrade ')) currentCliVersion = command.split(/\s+/).pop();
+    return { stdout: 'ok', stderr: '' };
+  };
+  const mockFetch = async url => {
+    const u = String(url);
+    if (u.includes('registry.npmjs.org')) return { ok: true, json: async () => ({ version: '1.6.4' }) };
+    if (u.endsWith('/releases/latest')) return { ok: true, json: async () => ({ tag_name: 'v1.6.4' }) };
+    if (u.includes('/commits/')) return { ok: true, json: async () => ({ sha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }) };
+    return { ok: true, json: async () => ({ default_branch: 'main', name: 'codegraph' }) };
+  };
+
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome,
+    claudeConfigDir,
+    fetchImpl: mockFetch,
+    githubToken: '',
+    runShell,
+  });
+  await service.init();
+
+  const pkgDef = {
+    name: 'codegraph',
+    kind: 'installer',
+    repo: 'https://github.com/colbymchenry/codegraph',
+    ref: 'v1.5.0',
+    version: '1.5.0',
+    npmPackage: '@colbymchenry/codegraph',
+    targets: ['codex', 'claude-code', 'dsh'],
+    commands: {
+      shared: {
+        install: 'curl -fsSL https://example.com/install.sh | sh',
+        upgrade: 'codegraph upgrade {{version}}',
+        uninstall: 'codegraph uninstall --yes',
+        version: 'codegraph --version',
+      },
+      codex: {
+        install: 'codegraph install --target codex --yes',
+        uninstall: 'codegraph uninstall --target codex --yes --keep-cli',
+      },
+      'claude-code': {
+        install: 'codegraph install --target claude --yes',
+        uninstall: 'codegraph uninstall --target claude --yes --keep-cli',
+      },
+      dsh: {
+        install: 'codegraph install --target dsh --yes',
+        uninstall: 'codegraph uninstall --target dsh --yes --keep-cli',
+      },
+    },
+  };
+
+  // 1. Dry-run 预览不执行真实命令
+  const preview = await service.action({ type: 'package.save', installNow: true, dryRun: true, package: pkgDef });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(preview.steps.map(s => [s.harness, s.status]), [
+    ['shared', 'preview'],
+    ['codex', 'preview'],
+    ['claude-code', 'preview'],
+    ['dsh', 'preview'],
+  ]);
+
+  // 2. 实际安装：全局脚本只执行 1 次，claude-code 透传 CLAUDE_CONFIG_DIR，并探测回写 1.5.0
+  const installed = await service.action({ type: 'package.install', id: 'codegraph' });
+  assert.deepEqual(calls, [
+    { command: 'curl -fsSL https://example.com/install.sh | sh', claudeConfigDir: undefined },
+    { command: 'codegraph install --target codex --yes', claudeConfigDir: undefined },
+    { command: 'codegraph install --target claude --yes', claudeConfigDir },
+    { command: 'codegraph install --target dsh --yes', claudeConfigDir: undefined },
+    { command: 'codegraph --version', claudeConfigDir: undefined },
+  ]);
+  const pkgAfterInstall = installed.state.packages[0];
+  assert.equal(pkgAfterInstall.lock.resolvedVersion, '1.5.0');
+  assert.equal(pkgAfterInstall.harnessStatuses['claude-code'].installedVersion, '1.5.0');
+
+  // 3. 检查更新：对比实测版本 1.5.0 与远端 1.6.4
+  calls.length = 0;
+  const checked = await service.action({ type: 'packages.checkUpdates', ids: ['codegraph'] });
+  assert.equal(checked.state.packages[0].lock.updateAvailable, true);
+  assert.equal(checked.state.packages[0].lock.latestVersion, '1.6.4');
+
+  // 4. 升级：全局 upgrade 只跑 1 次并刷新各端，探测版本更新为 1.6.4
+  calls.length = 0;
+  const upgraded = await service.action({ type: 'package.upgrade', id: 'codegraph' });
+  assert.deepEqual(calls.map(c => c.command), [
+    'codegraph upgrade 1.6.4',
+    'codegraph install --target codex --yes',
+    'codegraph install --target claude --yes',
+    'codegraph install --target dsh --yes',
+    'codegraph --version',
+  ]);
+  assert.equal(upgraded.state.packages[0].version, '1.6.4');
+  assert.equal(upgraded.state.packages[0].lock.resolvedVersion, '1.6.4');
+  assert.equal(upgraded.state.packages[0].harnessStatuses.codex.installedVersion, '1.6.4');
+
+  // 5. 仅卸载单个端（codex）：保留 CLI，不触发 shared.uninstall
+  calls.length = 0;
+  await service.action({ type: 'package.uninstall', id: 'codegraph', harnesses: ['codex'] });
+  assert.deepEqual(calls.map(c => c.command), ['codegraph uninstall --target codex --yes --keep-cli']);
+
+  // 6. 卸载剩余所有已装端：先按端清理（带 CLAUDE_CONFIG_DIR），最后触发 1 次 shared.uninstall
+  calls.length = 0;
+  await service.action({ type: 'package.uninstall', id: 'codegraph', harnesses: ['claude-code', 'dsh'] });
+  assert.deepEqual(calls, [
+    { command: 'codegraph uninstall --target claude --yes --keep-cli', claudeConfigDir },
+    { command: 'codegraph uninstall --target dsh --yes --keep-cli', claudeConfigDir: undefined },
+    { command: 'codegraph uninstall --yes', claudeConfigDir: undefined },
+  ]);
+
+  // 7. 全局命令失败时短路，不继续执行分端命令
+  failShared = true;
+  calls.length = 0;
+  const failed = await service.action({ type: 'package.install', id: 'codegraph' });
+  assert.deepEqual(calls.map(c => c.command), ['curl -fsSL https://example.com/install.sh | sh']);
+  assert.equal(failed.steps.length, 1);
+  assert.equal(failed.steps[0].harness, 'shared');
+  assert.equal(failed.steps[0].status, 'error');
+  assert.equal(failed.state.packages[0].harnessStatuses.codex.status, 'failed');
+  assert.match(failed.state.packages[0].harnessStatuses.codex.lastError, /全局命令失败/);
+});

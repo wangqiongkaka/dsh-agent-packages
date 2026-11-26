@@ -77,6 +77,21 @@ export function normalizePackage(input, existing) {
 
   const commandsInput = isPlainObject(input.commands) ? input.commands : (existing?.commands ?? {});
   const commands = {};
+  if (isPlainObject(commandsInput.shared)) {
+    const shared = commandsInput.shared;
+    const install = typeof shared.install === 'string' ? shared.install.trim() : '';
+    const upgrade = typeof shared.upgrade === 'string' ? shared.upgrade.trim() : '';
+    const uninstall = typeof shared.uninstall === 'string' ? shared.uninstall.trim() : '';
+    const version = typeof shared.version === 'string' ? shared.version.trim() : '';
+    if (install || upgrade || uninstall || version) {
+      commands.shared = {
+        ...(install ? { install } : {}),
+        ...(upgrade ? { upgrade } : {}),
+        ...(uninstall ? { uninstall } : {}),
+        ...(version ? { version } : {}),
+      };
+    }
+  }
   for (const harnessId of HARNESS_IDS) {
     const entry = commandsInput[harnessId];
     if (!isPlainObject(entry)) continue;

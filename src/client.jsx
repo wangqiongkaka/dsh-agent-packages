@@ -556,11 +556,64 @@ export function PackagesPage() {
   }
 
   // 自定义安装器必填，放在主区；其他类型放进「高级设置」，填写后覆盖内置安装方式
+  const showSharedCommands = draft.kind === 'installer' || Boolean(
+    draft.commands.shared?.install ||
+    draft.commands.shared?.upgrade ||
+    draft.commands.shared?.uninstall ||
+    draft.commands.shared?.version
+  );
   const commandFields = (
     <>
       <p className="ap-help">
-        {draft.kind === 'installer' ? '每个勾选的端都需要填写安装命令。' : '填写后覆盖内置安装方式。'}可用变量 <code>{'{{repo}}'}</code> <code>{'{{ref}}'}</code> <code>{'{{version}}'}</code> <code>{'{{dir}}'}</code>（用到 <code>{'{{dir}}'}</code> 时先检出仓库）
+        {draft.kind === 'installer' ? '全局命令每次操作只执行一次；勾选端后将依次执行对应端命令。' : '填写后覆盖内置安装方式。'}可用变量 <code>{'{{repo}}'}</code> <code>{'{{ref}}'}</code> <code>{'{{version}}'}</code> <code>{'{{dir}}'}</code>（用到 <code>{'{{dir}}'}</code> 时先检出仓库）
       </p>
+      {showSharedCommands && (
+        <div className="ap-cmd-card">
+          <strong>全局命令</strong>
+          <div className="ap-grid">
+            <div className="ap-field">
+              <label htmlFor="ap-cmd-shared-install">安装</label>
+              <input
+                id="ap-cmd-shared-install"
+                className="ap-input"
+                placeholder="可选，如官方 CLI 安装脚本"
+                value={draft.commands.shared?.install || ''}
+                onChange={e => updateHarnessCommand('shared', 'install', e.target.value)}
+              />
+            </div>
+            <div className="ap-field">
+              <label htmlFor="ap-cmd-shared-upgrade">升级</label>
+              <input
+                id="ap-cmd-shared-upgrade"
+                className="ap-input"
+                placeholder="留空复用全局安装命令"
+                value={draft.commands.shared?.upgrade || ''}
+                onChange={e => updateHarnessCommand('shared', 'upgrade', e.target.value)}
+              />
+            </div>
+            <div className="ap-field">
+              <label htmlFor="ap-cmd-shared-uninstall">卸载</label>
+              <input
+                id="ap-cmd-shared-uninstall"
+                className="ap-input"
+                placeholder="全部端卸载后执行，可选"
+                value={draft.commands.shared?.uninstall || ''}
+                onChange={e => updateHarnessCommand('shared', 'uninstall', e.target.value)}
+              />
+            </div>
+            <div className="ap-field">
+              <label htmlFor="ap-cmd-shared-version">版本检测</label>
+              <input
+                id="ap-cmd-shared-version"
+                className="ap-input"
+                placeholder="可选，如 codegraph --version"
+                value={draft.commands.shared?.version || ''}
+                onChange={e => updateHarnessCommand('shared', 'version', e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {draft.targets.map(harnessId => (
         <div key={harnessId} className="ap-cmd-card">
           <strong>{HARNESS_META[harnessId].label}</strong>
@@ -570,7 +623,7 @@ export function PackagesPage() {
               <input
                 id={`ap-cmd-install-${harnessId}`}
                 className="ap-input"
-                placeholder="该端安装命令"
+                placeholder={draft.commands.shared?.install ? '留空仅执行全局命令' : '该端安装命令'}
                 value={draft.commands[harnessId]?.install || ''}
                 onChange={e => updateHarnessCommand(harnessId, 'install', e.target.value)}
               />
@@ -811,6 +864,7 @@ export function PackagesPage() {
                       {evidence.latestRelease ? <> · 最新 Release <code>{evidence.latestRelease}</code></> : null}
                       {!evidence.latestRelease && evidence.plugin?.version ? <> · 版本 <code>{formatVersion(evidence.plugin.version)}</code></> : null}
                       {evidence.discoveredSkills?.length ? <> · 发现 {evidence.discoveredSkills.length} 个 Skills（{evidence.discoveredSkills.slice(0, 6).join(', ')}{evidence.discoveredSkills.length > 6 ? '…' : ''}）</> : null}
+                      {evidence.cliBin ? <> · CLI <code>{evidence.cliBin}</code></> : null}
                       {evidence.npmPackage ? <> · npm 包 <code>{evidence.npmPackage}</code></> : null}
                       {evidence.pythonPackage ? <> · Python 包 <code>{evidence.pythonPackage}</code></> : null}
                       {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，声明 Hooks：{evidence.plugin.hookEvents.join('、')}（Claude Code / Codex 安装时注册）</> : '，未声明 Hooks'}</> : null}
@@ -1476,7 +1530,9 @@ export function PackagesPage() {
                     <div className="ap-log-top">
                       <span className={stepBadgeClass(step.status)}>{step.status}</span>
                       {step.packageName && <strong>{step.packageName}</strong>}
-                      <span className="ap-badge">{HARNESS_META[step.harness]?.label || step.harness}</span>
+                      <span className="ap-badge">
+                        {step.harness === 'shared' ? '全局 CLI' : step.harness === 'repo' ? '仓库' : (HARNESS_META[step.harness]?.label || step.harness)}
+                      </span>
                       <span>{step.detail}</span>
                     </div>
                     {step.command && <pre className="ap-log-out">$ {step.command}</pre>}

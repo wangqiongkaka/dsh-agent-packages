@@ -79,6 +79,59 @@ try {
     if (u.includes('raw.githubusercontent.com/microsoft/playwright-mcp/main/README.md')) {
       return { ok: true, text: async () => '# Playwright MCP\n\n## Claude Code\n```bash\nclaude mcp add playwright npx @playwright/mcp@latest\n```\n' };
     }
+    if (u.includes('api.github.com/repos/colbymchenry/codegraph/releases/latest')) {
+      return { ok: true, json: async () => ({ tag_name: 'v1.6.4' }) };
+    }
+    if (u.includes('api.github.com/repos/colbymchenry/codegraph/commits/')) {
+      return { ok: true, json: async () => ({ sha: '2222222333333344444445555555666666677777' }) };
+    }
+    if (u.includes('api.github.com/repos/colbymchenry/codegraph/git/trees/')) {
+      return {
+        ok: true,
+        json: async () => ({
+          tree: [
+            { type: 'blob', path: 'package.json' },
+            { type: 'blob', path: 'install.sh' },
+            { type: 'blob', path: 'README.md' },
+            { type: 'blob', path: '.claude/skills/add-lang/SKILL.md' },
+            { type: 'blob', path: 'src/installer/targets/claude.ts' },
+            { type: 'blob', path: 'src/installer/targets/codex.ts' },
+            { type: 'blob', path: 'src/installer/targets/antigravity.ts' },
+            { type: 'blob', path: 'src/installer/targets/dsh.ts' },
+          ],
+        }),
+      };
+    }
+    if (u.includes('api.github.com/repos/colbymchenry/codegraph')) {
+      return { ok: true, json: async () => ({ name: 'codegraph', default_branch: 'main', description: 'Local semantic code intelligence graph' }) };
+    }
+    if (u.includes('raw.githubusercontent.com/colbymchenry/codegraph/main/package.json')) {
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          name: '@colbymchenry/codegraph',
+          version: '1.6.4',
+          bin: { codegraph: './dist/bin/codegraph.js' },
+        }),
+      };
+    }
+    if (u.includes('raw.githubusercontent.com/colbymchenry/codegraph/main/README.md')) {
+      return {
+        ok: true,
+        text: async () => [
+          '# CodeGraph',
+          '```bash',
+          'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh',
+          '```',
+          '```bash',
+          'codegraph install',
+          'codegraph upgrade [version]',
+          'codegraph uninstall',
+          '```',
+          'Pass `--keep-cli`, `--target`, `--yes`.',
+        ].join('\n'),
+      };
+    }
     return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
   };
 
@@ -214,6 +267,27 @@ try {
 
   await page.getByRole('button', { name: '保存并安装' }).click();
   await page.getByText('playwright-mcp').first().waitFor();
+
+  // 1b. 解析 CodeGraph 类 CLI 安装器仓库：校验自动识别为自定义安装器、填充全局与 4 端命令及对齐
+  await page.getByRole('button', { name: '添加包' }).click();
+  await page.locator('#ap-repo').fill('https://github.com/colbymchenry/codegraph.git');
+  await page.getByRole('button', { name: '解析仓库' }).click();
+  await page.locator('.ap-evidence').waitFor();
+  assert.match(await page.locator('#ap-kind').innerText(), /自定义安装器/);
+  assert.match(await page.locator('.ap-evidence').innerText(), /CLI codegraph/);
+  assert.equal(await page.locator('#ap-cmd-shared-install').inputValue(), 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh');
+  assert.equal(await page.locator('#ap-cmd-shared-upgrade').inputValue(), 'codegraph upgrade {{version}}');
+  assert.equal(await page.locator('#ap-cmd-shared-version').inputValue(), 'codegraph --version');
+  assert.equal(await page.locator('#ap-cmd-install-claude-code').inputValue(), 'codegraph install --target claude --yes');
+  assert.equal(await page.locator('#ap-cmd-install-dsh').inputValue(), 'codegraph install --target dsh --yes');
+  assert.deepEqual(await misaligned(), [], 'CLI 安装器编辑面板宽屏输入框未对齐');
+  await page.screenshot({ path: 'artifacts/packages-codegraph-editor.png', fullPage: true });
+  await page.getByRole('button', { name: '保存并预览' }).click();
+  await page.getByText('全局 CLI').first().waitFor();
+  await page.getByRole('button', { name: '收起' }).click();
+  // 删除测试中保存的 codegraph 预览项，保持后续包数量断言一致
+  await page.getByRole('button', { name: 'codegraph 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '从清单移除' }).click();
 
   // 2. 检查更新并验证出现版本对比徽章与状态化主按钮，再点击升级
   await page.getByRole('button', { name: '检查更新' }).click();

@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { cp, lstat, mkdir, readdir, readlink, rm, symlink } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { HARNESS_IDS, HARNESS_META } from './constants.mjs';
+import { normalizeVersion } from './shared.mjs';
 import {
   interpolateTemplate,
   removeCodexMcpServer,
@@ -397,9 +398,16 @@ async function runCustomCommand(pkg, harnessId, action, commandTemplate, repoDir
   if (harnessId === 'claude-code' && options.claudeConfigDir) {
     extraEnv.CLAUDE_CONFIG_DIR = options.claudeConfigDir;
   }
+  if (harnessId === 'codex' && options.codexHome) {
+    extraEnv.CODEX_HOME = options.codexHome;
+  }
+  if (harnessId === 'dsh' && options.dshHome) {
+    extraEnv.DSH_HOME = options.dshHome;
+  }
   const { stdout, stderr } = await runShell(rendered, {
     cwd: repoDir && options.repoSynced ? repoDir : options.rootDir,
     env: buildUserEnv(extraEnv),
+    timeout: options.timeout,
   });
   return {
     harness: harnessId,
@@ -410,6 +418,36 @@ async function runCustomCommand(pkg, harnessId, action, commandTemplate, repoDir
     detail: `命令执行成功`,
     output: summarizeOutput(stdout, stderr),
     warnings: [],
+  };
+}
+
+export async function probeSharedCliVersion(pkg, { runShell = defaultRunShell, rootDir, repoDir = '' } = {}) {
+  const versionCmd = pkg.commands?.shared?.version;
+  if (!versionCmd) return '';
+  const rendered = interpolateTemplate(versionCmd, templateVars(pkg, 'shared', repoDir)).trim();
+  if (!rendered) return '';
+  try {
+    const { stdout, stderr } = await runShell(rendered, {
+      cwd: rootDir,
+      env: buildUserEnv(),
+      timeout: 10_000,
+    });
+    const text = `${stdout || ''}\n${stderr || ''}`;
+    const match = /(?:^|[^\d.])v?(\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z.-]+)?)(?=$|[^\d.])/m.exec(text);
+    return match ? match[1] : '';
+  } catch {
+    return '';
+  }
+}
+
+function harnessEnvOverrides(harnessPaths) {
+  const codexDir = harnessPaths.codex?.mcpFile ? dirname(harnessPaths.codex.mcpFile) : '';
+  const defaultCodexDir = harnessPaths.home ? join(harnessPaths.home, '.codex') : '';
+  const defaultDshDir = harnessPaths.home ? join(harnessPaths.home, '.dsh') : '';
+  return {
+    claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+    codexHome: codexDir && codexDir !== defaultCodexDir ? codexDir : '',
+    dshHome: harnessPaths.dshHome && harnessPaths.dshHome !== defaultDshDir ? harnessPaths.dshHome : '',
   };
 }
 
@@ -433,10 +471,15 @@ export async function applyPackageAction({
     harnesses: { ...(lockEntry.harnesses ?? {}) },
   };
 
+  const envOverrides = harnessEnvOverrides(harnessPaths);
+
   if (action === 'uninstall') {
     const toUninstall = targetHarnesses.length
       ? targetHarnesses
       : Object.keys(nextLock.harnesses).filter(h => nextLock.harnesses[h]?.status === 'installed');
+    const sharedUninstall = pkg.commands?.shared?.uninstall || '';
+    const remainingInstalled = Object.entries(nextLock.harnesses)
+      .some(([h, entry]) => !toUninstall.includes(h) && entry?.status === 'installed');
 
     for (const harnessId of toUninstall) {
       const prev = nextLock.harnesses[harnessId] ?? {};
@@ -449,7 +492,7 @@ export async function applyPackageAction({
             runShell,
             rootDir,
             repoSynced: false,
-            claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+            ...envOverrides,
           });
         } else if (pkg.kind === 'plugin') {
           step = await applyPluginToHarness(pkg, harnessId, 'uninstall', harnessPaths, { dryRun, runShell, rootDir });
@@ -486,6 +529,15 @@ export async function applyPackageAction({
               warnings: [],
             };
           }
+        } else if (pkg.kind === 'installer' && sharedUninstall && !remainingInstalled) {
+          step = {
+            harness: harnessId,
+            action: 'uninstall',
+            method: 'command',
+            status: dryRun ? 'preview' : 'ok',
+            detail: dryRun ? '将随全局卸载命令一并清理' : '已随全局卸载命令清理',
+            warnings: [],
+          };
         } else {
           step = {
             harness: harnessId,
@@ -513,13 +565,34 @@ export async function applyPackageAction({
         }
       }
     }
+
+    // 全部已安装端均已卸载且无失败时，再执行全局 CLI 卸载命令，避免部分卸载误删其他端共用的 CLI
+    const hasUninstallError = steps.some(s => s.status === 'error');
+    if (sharedUninstall && !remainingInstalled && !hasUninstallError) {
+      try {
+        const sharedStep = await runCustomCommand(pkg, 'shared', 'uninstall', sharedUninstall, repoDir, {
+          dryRun,
+          runShell,
+          rootDir,
+          repoSynced: false,
+        });
+        steps.push(sharedStep);
+      } catch (error) {
+        steps.push({ harness: 'shared', action: 'uninstall', method: 'command', status: 'error', detail: error.message, warnings: [] });
+      }
+    }
+
     return { steps, lockEntry: nextLock };
   }
 
   // install / upgrade
   let repoSynced = false;
+  const sharedCmd = action === 'upgrade'
+    ? (pkg.commands?.shared?.upgrade || pkg.commands?.shared?.install || '')
+    : (pkg.commands?.shared?.install || '');
   const needsRepoClone = Boolean(pkg.repo) && (
     pkg.kind === 'skills-repo' ||
+    sharedCmd.includes('{{dir}}') ||
     targetHarnesses.some(h => {
       const cmd = action === 'upgrade'
         ? (pkg.commands?.[h]?.upgrade || pkg.commands?.[h]?.install || '')
@@ -550,6 +623,29 @@ export async function applyPackageAction({
     }
   }
 
+  let sharedStep = null;
+  if (sharedCmd) {
+    try {
+      sharedStep = await runCustomCommand(pkg, 'shared', action, sharedCmd, repoDir, {
+        dryRun,
+        runShell,
+        rootDir,
+        repoSynced,
+      });
+      steps.push(sharedStep);
+    } catch (error) {
+      steps.push({ harness: 'shared', action, method: 'command', status: 'error', detail: error.message, warnings: [] });
+      if (!dryRun) {
+        for (const harnessId of targetHarnesses) {
+          const prev = nextLock.harnesses[harnessId] ?? {};
+          nextLock.harnesses[harnessId] = { ...prev, status: 'failed', lastError: `全局命令失败：${error.message}` };
+        }
+      }
+      return { steps, lockEntry: nextLock };
+    }
+  }
+
+  const succeededHarnesses = [];
   for (const harnessId of targetHarnesses) {
     const prev = nextLock.harnesses[harnessId] ?? {};
     const customCmd = action === 'upgrade'
@@ -569,7 +665,7 @@ export async function applyPackageAction({
           runShell,
           rootDir,
           repoSynced,
-          claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+          ...envOverrides,
         });
       } else if (pkg.kind === 'plugin') {
         step = await applyPluginToHarness(pkg, harnessId, action, harnessPaths, { dryRun, runShell, rootDir });
@@ -577,6 +673,15 @@ export async function applyPackageAction({
         step = await installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, prev, { dryRun, action });
       } else if (pkg.kind === 'mcp') {
         step = await installMcpToHarness(pkg, harnessId, harnessPaths, vars, prev, { dryRun, action });
+      } else if (pkg.kind === 'installer' && sharedStep) {
+        step = {
+          harness: harnessId,
+          action,
+          method: 'command',
+          status: dryRun ? 'preview' : 'ok',
+          detail: dryRun ? '将随全局命令统一安装' : '已随全局命令完成',
+          warnings: [],
+        };
       } else {
         step = {
           harness: harnessId,
@@ -590,6 +695,7 @@ export async function applyPackageAction({
       steps.push(step);
 
       if (!dryRun && step.status === 'ok') {
+        succeededHarnesses.push(harnessId);
         nextLock.resolvedVersion = pkg.version || pkg.ref.replace(/^v/, '') || step.installedVersion || nextLock.resolvedVersion || '';
         nextLock.harnesses[harnessId] = {
           status: 'installed',
@@ -599,7 +705,7 @@ export async function applyPackageAction({
           installedAt: new Date().toISOString(),
           managedPaths: step.managedPaths ?? prev.managedPaths ?? [],
           managedServerKey: step.managedServerKey ?? prev.managedServerKey ?? null,
-          lastCommand: step.command ?? '',
+          lastCommand: step.command ?? sharedStep?.command ?? '',
           lastError: '',
         };
       }
@@ -618,6 +724,21 @@ export async function applyPackageAction({
           status: 'failed',
           lastError: error.message,
         };
+      }
+    }
+  }
+
+  if (!dryRun && pkg.commands?.shared?.version && (succeededHarnesses.length > 0 || sharedStep?.status === 'ok')) {
+    const detectedVersion = await probeSharedCliVersion(pkg, { runShell, rootDir, repoDir });
+    if (detectedVersion) {
+      nextLock.resolvedVersion = detectedVersion;
+      for (const harnessId of succeededHarnesses) {
+        if (nextLock.harnesses[harnessId]) {
+          nextLock.harnesses[harnessId].installedVersion = detectedVersion;
+        }
+      }
+      if (action === 'upgrade' && pkg.version && normalizeVersion(detectedVersion) !== normalizeVersion(pkg.version) && sharedStep) {
+        sharedStep.warnings = [...sharedStep.warnings, `探测到的实际版本 ${detectedVersion} 与目标版本 ${pkg.version} 不一致`];
       }
     }
   }

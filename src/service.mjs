@@ -2,7 +2,7 @@ import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths 
 import { normalizeVersion, unsupportedReason } from './shared.mjs';
 import { PackageStore, normalizePackage } from './store.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
-import { applyPackageAction, defaultExecFile, defaultRunShell } from './installer.mjs';
+import { applyPackageAction, defaultExecFile, defaultRunShell, probeSharedCliVersion } from './installer.mjs';
 import { readInstalledPlugins, scanLocalEnvironment } from './scanner.mjs';
 import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
@@ -90,7 +90,7 @@ export class PackageManagerService {
         harnessStatuses[harnessId] = {
           selected,
           status,
-          method: hLock?.method || (pkg.commands?.[harnessId]?.install ? 'command' : 'adapter'),
+          method: hLock?.method || ((pkg.commands?.[harnessId]?.install || (pkg.kind === 'installer' && pkg.commands?.shared?.install)) ? 'command' : 'adapter'),
           installedVersion,
           installedCommit: hLock?.installedCommit || '',
           installedAt: hLock?.installedAt || null,
@@ -359,15 +359,26 @@ export class PackageManagerService {
         for (const pkg of targets) {
           const prev = lock.packages[pkg.id] ?? {};
           const observedVersions = [];
+          const hasInstalledHarness = HARNESS_IDS.some(h => prev.harnesses?.[h]?.status === 'installed');
+          const liveCliVersion = pkg.commands?.shared?.version && hasInstalledHarness
+            ? await probeSharedCliVersion(pkg, { runShell: this.runShell, rootDir: this.root })
+            : '';
+          if (liveCliVersion) observedVersions.push(liveCliVersion);
+          const nextHarnesses = liveCliVersion ? { ...(prev.harnesses ?? {}) } : null;
           for (const harnessId of HARNESS_IDS) {
             const hLock = prev.harnesses?.[harnessId];
             if (hLock?.status !== 'installed') continue;
-            const ver = findLivePlugin(livePlugins, pkg, harnessId)?.version || hLock.installedVersion || '';
+            if (nextHarnesses && liveCliVersion) {
+              nextHarnesses[harnessId] = { ...hLock, installedVersion: liveCliVersion };
+            }
+            const ver = liveCliVersion || findLivePlugin(livePlugins, pkg, harnessId)?.version || hLock.installedVersion || '';
             if (ver) observedVersions.push(ver);
           }
-          const checkLock = prev.resolvedVersion || !observedVersions.length
-            ? prev
-            : { ...prev, resolvedVersion: observedVersions[0] };
+          const checkLock = liveCliVersion
+            ? { ...prev, resolvedVersion: liveCliVersion }
+            : prev.resolvedVersion || !observedVersions.length
+              ? prev
+              : { ...prev, resolvedVersion: observedVersions[0] };
           const check = await checkPackageUpdate(pkg, checkLock, {
             fetchImpl: this.fetchImpl,
             execCommand: this.execImpl,
@@ -381,7 +392,8 @@ export class PackageManagerService {
           if (check.updateAvailable) updatedCount++;
           lock.packages[pkg.id] = {
             ...prev,
-            ...(checkLock.resolvedVersion && !prev.resolvedVersion ? { resolvedVersion: checkLock.resolvedVersion } : {}),
+            ...(nextHarnesses ? { harnesses: nextHarnesses } : {}),
+            ...(liveCliVersion ? { resolvedVersion: liveCliVersion } : checkLock.resolvedVersion && !prev.resolvedVersion ? { resolvedVersion: checkLock.resolvedVersion } : {}),
             latestRef: check.latestRef ?? prev.latestRef ?? '',
             latestCommit: check.latestCommit ?? prev.latestCommit ?? '',
             latestVersion: check.latestVersion ?? prev.latestVersion ?? '',
