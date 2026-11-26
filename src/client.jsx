@@ -183,7 +183,7 @@ export function PackagesPage() {
   const [draft, setDraft] = useState(emptyDraft);
   const [nameTouched, setNameTouched] = useState(false);
   const [evidence, setEvidence] = useState(null);
-  const [showCustomCommands, setShowCustomCommands] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [scanReport, setScanReport] = useState(null);
 
@@ -252,9 +252,8 @@ export function PackagesPage() {
         name: editingOriginalId || nameTouched ? prev.name : nextDraft.name,
       }));
       setEvidence(result.evidence);
-      if (nextDraft.kind === 'installer' || Object.keys(nextDraft.commands).length > 0) {
-        setShowCustomCommands(true);
-      }
+      // 解析出的自定义命令会覆盖内置安装方式，展开让用户看到
+      if (nextDraft.kind !== 'installer' && Object.keys(nextDraft.commands).length > 0) setShowAdvanced(true);
       setNotice(result.message);
     } catch (cause) {
       setError(cause.message);
@@ -268,7 +267,7 @@ export function PackagesPage() {
     setDraft(emptyDraft());
     setNameTouched(false);
     setEvidence(null);
-    setShowCustomCommands(false);
+    setShowAdvanced(false);
     setEditorOpen(true);
     setTab('packages');
   }
@@ -277,7 +276,7 @@ export function PackagesPage() {
     setEditingOriginalId(pkg.id);
     setDraft(packageToDraft(pkg));
     setEvidence(null);
-    setShowCustomCommands(pkg.kind === 'installer' || Object.keys(pkg.commands || {}).length > 0);
+    setShowAdvanced(pkg.kind !== 'installer' && Object.keys(pkg.commands || {}).length > 0);
     setEditorOpen(true);
     setTab('packages');
   }
@@ -325,6 +324,52 @@ export function PackagesPage() {
       }
     );
   }
+
+  // 自定义安装器必填，放在主区；其他类型放进「高级设置」，填写后覆盖内置安装方式
+  const commandFields = (
+    <>
+      <p className="ap-help">
+        {draft.kind === 'installer' ? '每个勾选的端都需要填写安装命令。' : '填写后覆盖内置安装方式。'}可用变量 <code>{'{{repo}}'}</code> <code>{'{{ref}}'}</code> <code>{'{{version}}'}</code> <code>{'{{dir}}'}</code>（用到 <code>{'{{dir}}'}</code> 时先检出仓库）
+      </p>
+      {draft.targets.map(harnessId => (
+        <div key={harnessId} className="ap-cmd-card">
+          <strong>{HARNESS_META[harnessId].label}</strong>
+          <div className="ap-grid">
+            <div className="ap-field">
+              <label htmlFor={`ap-cmd-install-${harnessId}`}>安装</label>
+              <input
+                id={`ap-cmd-install-${harnessId}`}
+                className="ap-input"
+                placeholder="该端安装命令"
+                value={draft.commands[harnessId]?.install || ''}
+                onChange={e => updateHarnessCommand(harnessId, 'install', e.target.value)}
+              />
+            </div>
+            <div className="ap-field">
+              <label htmlFor={`ap-cmd-upgrade-${harnessId}`}>升级</label>
+              <input
+                id={`ap-cmd-upgrade-${harnessId}`}
+                className="ap-input"
+                placeholder="留空复用安装命令"
+                value={draft.commands[harnessId]?.upgrade || ''}
+                onChange={e => updateHarnessCommand(harnessId, 'upgrade', e.target.value)}
+              />
+            </div>
+            <div className="ap-field">
+              <label htmlFor={`ap-cmd-uninstall-${harnessId}`}>卸载</label>
+              <input
+                id={`ap-cmd-uninstall-${harnessId}`}
+                className="ap-input"
+                placeholder="可选"
+                value={draft.commands[harnessId]?.uninstall || ''}
+                onChange={e => updateHarnessCommand(harnessId, 'uninstall', e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+      ))}
+    </>
+  );
 
   const blockedTargets = draft.targets
     .map(harnessId => [harnessId, unsupportedReason(draft, harnessId)])
@@ -483,17 +528,17 @@ export function PackagesPage() {
               {editorOpen && (
                 <section className="ap-card ap-editor" aria-label={editingOriginalId ? '编辑包配置' : '添加新包'}>
                   <div className="ap-editor-head">
-                    <h3>{editingOriginalId ? `编辑包：${editingOriginalId}` : '添加 GitHub Skills / MCP 包'}</h3>
+                    <h3>{editingOriginalId ? `编辑 ${editingOriginalId}` : '添加包'}</h3>
                     <Button variant="outline" disabled={busy} onClick={() => setEditorOpen(false)}>收起</Button>
                   </div>
 
                   <div className="ap-inspect-row">
                     <div className="ap-field">
-                      <label htmlFor="ap-repo">GitHub 地址（支持 owner/repo 或完整 URL）</label>
+                      <label htmlFor="ap-repo">GitHub 仓库</label>
                       <input
                         id="ap-repo"
                         className="ap-input"
-                        placeholder="例如 microsoft/playwright-mcp 或 https://github.com/firecrawl/cli"
+                        placeholder="owner/repo 或 GitHub 链接"
                         value={draft.repo}
                         onChange={e => setDraft(prev => ({ ...prev, repo: e.target.value }))}
                       />
@@ -518,13 +563,13 @@ export function PackagesPage() {
                     </div>
                   )}
 
-                  <div className="ap-grid-3">
+                  <div className="ap-grid">
                     <div className="ap-field">
-                      <label htmlFor="ap-name">名称（可重命名）</label>
+                      <label htmlFor="ap-name">名称</label>
                       <input
                         id="ap-name"
                         className="ap-input"
-                        placeholder="解析仓库后自动填写"
+                        placeholder="解析后自动填写"
                         value={draft.name}
                         onChange={e => {
                           setNameTouched(true);
@@ -533,81 +578,22 @@ export function PackagesPage() {
                       />
                     </div>
                     <div className="ap-field">
-                      <label htmlFor="ap-id">包 ID（唯一标识）</label>
-                      <input
-                        id="ap-id"
-                        className="ap-input"
-                        placeholder={editingOriginalId ? '' : '留空按名称自动生成'}
-                        value={draft.id}
-                        disabled={Boolean(editingOriginalId)}
-                        onChange={e => setDraft(prev => ({ ...prev, id: e.target.value }))}
-                      />
-                    </div>
-                    <div className="ap-field">
-                      <label htmlFor="ap-kind">安装类型</label>
+                      <label htmlFor="ap-kind">类型</label>
                       <select
                         id="ap-kind"
                         className="ap-select"
                         value={draft.kind}
-                        onChange={e => {
-                          const nextKind = e.target.value;
-                          setDraft(prev => ({ ...prev, kind: nextKind }));
-                          if (nextKind === 'installer') setShowCustomCommands(true);
-                        }}
+                        onChange={e => setDraft(prev => ({ ...prev, kind: e.target.value }))}
                       >
-                        <option value="skills-repo">Skills 仓库（自动同步 SKILL.md）</option>
-                        <option value="plugin">插件（含 Hooks，调用各端插件命令安装）</option>
-                        <option value="mcp">MCP Server（声明式写入各端配置）</option>
-                        <option value="installer">自定义安装器（按各端自有命令执行）</option>
+                        {Object.entries(KIND_LABELS).map(([kind, label]) => (
+                          <option key={kind} value={kind}>{label}</option>
+                        ))}
                       </select>
                     </div>
                   </div>
 
-                  <div className="ap-grid-3">
-                    <div className="ap-field">
-                      <label htmlFor="ap-ref">锁定 Git Tag / 分支 / Commit</label>
-                      <input
-                        id="ap-ref"
-                        className="ap-input"
-                        placeholder="如 v1.2.0 或 main"
-                        value={draft.ref}
-                        onChange={e => setDraft(prev => ({ ...prev, ref: e.target.value }))}
-                      />
-                    </div>
-                    <div className="ap-field">
-                      <label htmlFor="ap-version">锁定版本号（供 &#123;&#123;version&#125;&#125; 替换）</label>
-                      <input
-                        id="ap-version"
-                        className="ap-input"
-                        placeholder="如 0.0.28"
-                        value={draft.version}
-                        onChange={e => setDraft(prev => ({ ...prev, version: e.target.value }))}
-                      />
-                    </div>
-                    <div className="ap-field">
-                      <label htmlFor="ap-npm">关联 npm 包名（可选，查版本用）</label>
-                      <input
-                        id="ap-npm"
-                        className="ap-input"
-                        placeholder="如 @playwright/mcp"
-                        value={draft.npmPackage}
-                        onChange={e => setDraft(prev => ({ ...prev, npmPackage: e.target.value }))}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="ap-field" style={{ marginBottom: 12 }}>
-                    <label htmlFor="ap-desc">备注说明</label>
-                    <input
-                      id="ap-desc"
-                      className="ap-input"
-                      value={draft.description}
-                      onChange={e => setDraft(prev => ({ ...prev, description: e.target.value }))}
-                    />
-                  </div>
-
                   <div className="ap-field">
-                    <label>目标 Harness（前置检查）</label>
+                    <label>安装到</label>
                     <div className="ap-check-group">
                       {HARNESS_IDS.map(harnessId => {
                         const reason = unsupportedReason(draft, harnessId);
@@ -627,15 +613,15 @@ export function PackagesPage() {
                     </div>
                     {blockedTargets.length > 0 && (
                       <p className="ap-field-error" role="alert">
-                        已勾选不支持的 Harness：{blockedTargets.map(([h]) => HARNESS_META[h].label).join('、')}。请取消勾选，或为该端填写自定义安装命令后再保存。
+                        已勾选不支持的端：{blockedTargets.map(([h]) => HARNESS_META[h].label).join('、')}。请取消勾选，或在{draft.kind === 'installer' ? '下方' : '「高级设置」中'}为该端填写安装命令。
                       </p>
                     )}
                   </div>
 
                   {draft.kind === 'skills-repo' && (
-                    <div className="ap-subbox">
-                      <div className="ap-subbox-title">Skills 仓库同步配置</div>
-                      <div className="ap-grid-2">
+                    <div className="ap-section">
+                      <h4>Skills 同步</h4>
+                      <div className="ap-grid">
                         <div className="ap-field">
                           <label htmlFor="ap-skills-mode">安装方式</label>
                           <select
@@ -644,16 +630,16 @@ export function PackagesPage() {
                             value={draft.skills.mode}
                             onChange={e => setDraft(prev => ({ ...prev, skills: { ...prev.skills, mode: e.target.value } }))}
                           >
-                            <option value="symlink">软链接到各 Harness 目录（推荐）</option>
-                            <option value="copy">复制副本到各 Harness 目录</option>
+                            <option value="symlink">软链接（推荐）</option>
+                            <option value="copy">复制</option>
                           </select>
                         </div>
                         <div className="ap-field">
-                          <label htmlFor="ap-skills-include">仅安装指定 Skills（逗号分隔，留空同步全部）</label>
+                          <label htmlFor="ap-skills-include">指定 Skills</label>
                           <input
                             id="ap-skills-include"
                             className="ap-input"
-                            placeholder="例如 code-review, tdd"
+                            placeholder="留空同步全部，如 code-review, tdd"
                             value={draft.skills.includeText}
                             onChange={e => setDraft(prev => ({ ...prev, skills: { ...prev.skills, includeText: e.target.value } }))}
                           />
@@ -663,9 +649,9 @@ export function PackagesPage() {
                   )}
 
                   {draft.kind === 'plugin' && (
-                    <div className="ap-subbox">
-                      <div className="ap-subbox-title">插件安装配置（由各 Harness 插件命令安装，Hooks、命令与 Skills 一并注册和卸载）</div>
-                      <div className="ap-grid-2">
+                    <div className="ap-section">
+                      <h4>插件</h4>
+                      <div className="ap-grid">
                         <div className="ap-field">
                           <label htmlFor="ap-plugin-name">插件名</label>
                           <input
@@ -677,7 +663,7 @@ export function PackagesPage() {
                           />
                         </div>
                         <div className="ap-field">
-                          <label htmlFor="ap-plugin-marketplace">插件市场名</label>
+                          <label htmlFor="ap-plugin-marketplace">插件市场</label>
                           <input
                             id="ap-plugin-marketplace"
                             className="ap-input"
@@ -687,14 +673,14 @@ export function PackagesPage() {
                           />
                         </div>
                       </div>
-                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，不支持安装。</p>
+                      <p className="ap-help">安装后：Codex 需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认。</p>
                     </div>
                   )}
 
                   {draft.kind === 'mcp' && (
-                    <div className="ap-subbox">
-                      <div className="ap-subbox-title">MCP Server 配置（自动渲染到 Codex TOML / Claude JSON / Antigravity JSON）</div>
-                      <div className="ap-grid-3">
+                    <div className="ap-section">
+                      <h4>MCP Server</h4>
+                      <div className="ap-grid">
                         <div className="ap-field">
                           <label htmlFor="ap-mcp-key">Server Key</label>
                           <input
@@ -713,116 +699,140 @@ export function PackagesPage() {
                             value={draft.mcp.transport}
                             onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, transport: e.target.value } }))}
                           >
-                            <option value="stdio">Stdio（本地命令）</option>
-                            <option value="http">Streamable HTTP（远程 URL）</option>
+                            <option value="stdio">Stdio</option>
+                            <option value="http">HTTP</option>
                           </select>
                         </div>
-                        <div className="ap-field">
-                          <label htmlFor="ap-mcp-env">环境变量名引用（逗号分隔，不写明文密钥）</label>
-                          <input
-                            id="ap-mcp-env"
-                            className="ap-input"
-                            placeholder="例如 FIRECRAWL_API_KEY"
-                            value={draft.mcp.envRefsText}
-                            onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, envRefsText: e.target.value } }))}
-                          />
-                        </div>
+                        {draft.mcp.transport === 'stdio' ? (
+                          <>
+                            <div className="ap-field">
+                              <label htmlFor="ap-mcp-cmd">Command</label>
+                              <input
+                                id="ap-mcp-cmd"
+                                className="ap-input"
+                                placeholder="如 npx 或 uvx"
+                                value={draft.mcp.command}
+                                onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, command: e.target.value } }))}
+                              />
+                            </div>
+                            <div className="ap-field">
+                              <label htmlFor="ap-mcp-args">Args</label>
+                              <input
+                                id="ap-mcp-args"
+                                className="ap-input"
+                                placeholder="空格分隔，如 -y @playwright/mcp@{{version}}"
+                                value={draft.mcp.argsText}
+                                onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, argsText: e.target.value } }))}
+                              />
+                            </div>
+                          </>
+                        ) : (
+                          <div className="ap-field">
+                            <label htmlFor="ap-mcp-url">Server URL</label>
+                            <input
+                              id="ap-mcp-url"
+                              className="ap-input"
+                              placeholder="https://example.com/mcp"
+                              value={draft.mcp.url}
+                              onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, url: e.target.value } }))}
+                            />
+                          </div>
+                        )}
                       </div>
-
-                      {draft.mcp.transport === 'stdio' ? (
-                        <div className="ap-grid-2">
-                          <div className="ap-field">
-                            <label htmlFor="ap-mcp-cmd">Command</label>
-                            <input
-                              id="ap-mcp-cmd"
-                              className="ap-input"
-                              placeholder="例如 npx 或 uvx"
-                              value={draft.mcp.command}
-                              onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, command: e.target.value } }))}
-                            />
-                          </div>
-                          <div className="ap-field">
-                            <label htmlFor="ap-mcp-args">Args（空格分隔，支持 &#123;&#123;version&#125;&#125;）</label>
-                            <input
-                              id="ap-mcp-args"
-                              className="ap-input"
-                              placeholder="例如 -y @playwright/mcp@{{version}}"
-                              value={draft.mcp.argsText}
-                              onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, argsText: e.target.value } }))}
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="ap-field">
-                          <label htmlFor="ap-mcp-url">Server URL</label>
-                          <input
-                            id="ap-mcp-url"
-                            className="ap-input"
-                            placeholder="https://example.com/mcp"
-                            value={draft.mcp.url}
-                            onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, url: e.target.value } }))}
-                          />
-                        </div>
-                      )}
+                      <div className="ap-field">
+                        <label htmlFor="ap-mcp-env">环境变量</label>
+                        <input
+                          id="ap-mcp-env"
+                          className="ap-input"
+                          placeholder="只填变量名，不填密钥，如 FIRECRAWL_API_KEY"
+                          value={draft.mcp.envRefsText}
+                          onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, envRefsText: e.target.value } }))}
+                        />
+                      </div>
                     </div>
                   )}
 
-                  <div className="ap-subbox">
-                    <div className="ap-subbox-title">
-                      <span>按 Harness 自定义安装命令{draft.kind === 'installer' ? '（必填）' : '（可选，填了将覆盖内置适配器）'}</span>
-                      {draft.kind !== 'installer' && (
-                        <Button variant="outline" onClick={() => setShowCustomCommands(v => !v)}>
-                          {showCustomCommands ? '隐藏命令' : '展开配置'}
-                        </Button>
-                      )}
+                  {draft.kind === 'installer' && (
+                    <div className="ap-section">
+                      <h4>安装命令</h4>
+                      {commandFields}
                     </div>
-                    {(draft.kind === 'installer' || showCustomCommands) && (
+                  )}
+
+                  <details
+                    className="ap-section ap-advanced"
+                    open={showAdvanced}
+                    onToggle={e => setShowAdvanced(e.currentTarget.open)}
+                  >
+                    <summary>
+                      高级设置
+                      {(draft.ref || draft.version) && (
+                        <span className="ap-help">{[draft.ref, draft.version].filter(Boolean).join(' · ')}</span>
+                      )}
+                    </summary>
+                    <div className="ap-grid">
+                      <div className="ap-field">
+                        <label htmlFor="ap-id">包 ID</label>
+                        <input
+                          id="ap-id"
+                          className="ap-input"
+                          placeholder={editingOriginalId ? '' : '留空按名称生成'}
+                          value={draft.id}
+                          disabled={Boolean(editingOriginalId)}
+                          onChange={e => setDraft(prev => ({ ...prev, id: e.target.value }))}
+                        />
+                      </div>
+                      <div className="ap-field">
+                        <label htmlFor="ap-ref">Git 引用</label>
+                        <input
+                          id="ap-ref"
+                          className="ap-input"
+                          placeholder="Tag / 分支 / Commit"
+                          value={draft.ref}
+                          onChange={e => setDraft(prev => ({ ...prev, ref: e.target.value }))}
+                        />
+                      </div>
+                      <div className="ap-field">
+                        <label htmlFor="ap-version">版本号</label>
+                        <input
+                          id="ap-version"
+                          className="ap-input"
+                          placeholder="替换 {{version}}，如 0.0.28"
+                          value={draft.version}
+                          onChange={e => setDraft(prev => ({ ...prev, version: e.target.value }))}
+                        />
+                      </div>
+                      <div className="ap-field">
+                        <label htmlFor="ap-npm">npm 包</label>
+                        <input
+                          id="ap-npm"
+                          className="ap-input"
+                          placeholder="用于检查新版本"
+                          value={draft.npmPackage}
+                          onChange={e => setDraft(prev => ({ ...prev, npmPackage: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+                    <div className="ap-field">
+                      <label htmlFor="ap-desc">备注</label>
+                      <input
+                        id="ap-desc"
+                        className="ap-input"
+                        value={draft.description}
+                        onChange={e => setDraft(prev => ({ ...prev, description: e.target.value }))}
+                      />
+                    </div>
+                    {draft.kind !== 'installer' && (
                       <>
-                        <p className="ap-help" style={{ marginBottom: 10 }}>
-                          支持模板变量：<code>{'{{repo}}'}</code>、<code>{'{{ref}}'}</code>、<code>{'{{version}}'}</code>、<code>{'{{dir}}'}</code>（引用 <code>{'{{dir}}'}</code> 时会自动先检出仓库）。
-                        </p>
-                        {draft.targets.map(harnessId => (
-                          <div key={harnessId} className="ap-cmd-card">
-                            <strong>{HARNESS_META[harnessId].label}</strong>
-                            <div className="ap-grid-3" style={{ marginBottom: 0 }}>
-                              <div className="ap-field">
-                                <label htmlFor={`ap-cmd-install-${harnessId}`}>安装命令（install）</label>
-                                <input
-                                  id={`ap-cmd-install-${harnessId}`}
-                                  className="ap-input"
-                                  placeholder="上游给出的该端安装命令"
-                                  value={draft.commands[harnessId]?.install || ''}
-                                  onChange={e => updateHarnessCommand(harnessId, 'install', e.target.value)}
-                                />
-                              </div>
-                              <div className="ap-field">
-                                <label htmlFor={`ap-cmd-upgrade-${harnessId}`}>升级命令（可选，默认复用 install）</label>
-                                <input
-                                  id={`ap-cmd-upgrade-${harnessId}`}
-                                  className="ap-input"
-                                  value={draft.commands[harnessId]?.upgrade || ''}
-                                  onChange={e => updateHarnessCommand(harnessId, 'upgrade', e.target.value)}
-                                />
-                              </div>
-                              <div className="ap-field">
-                                <label htmlFor={`ap-cmd-uninstall-${harnessId}`}>卸载命令（可选）</label>
-                                <input
-                                  id={`ap-cmd-uninstall-${harnessId}`}
-                                  className="ap-input"
-                                  value={draft.commands[harnessId]?.uninstall || ''}
-                                  onChange={e => updateHarnessCommand(harnessId, 'uninstall', e.target.value)}
-                                />
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                        <h4>自定义命令</h4>
+                        {commandFields}
                       </>
                     )}
-                  </div>
+                  </details>
 
                   <div className="ap-editor-footer">
                     <Button variant="outline" disabled={busy} onClick={() => setEditorOpen(false)}>取消</Button>
-                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>仅保存清单</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>仅保存</Button>
                     <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>保存并预览</Button>
                     <Button variant="primary" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>保存并安装</Button>
                   </div>
