@@ -295,7 +295,14 @@ export function PackagesPage() {
     }
   }
 
+  function closeEditor() {
+    setEditorOpen(false);
+    setEditingOriginalId('');
+    setEvidence(null);
+  }
+
   function openNewEditor() {
+    setOpenMenuId('');
     setEditingOriginalId('');
     setDraft(emptyDraft());
     setNameTouched(false);
@@ -306,6 +313,7 @@ export function PackagesPage() {
   }
 
   function openEditEditor(pkg) {
+    setOpenMenuId('');
     setEditingOriginalId(pkg.id);
     setDraft(packageToDraft(pkg));
     setEvidence(null);
@@ -348,11 +356,7 @@ export function PackagesPage() {
       },
       {
         onSuccess: () => {
-          if (!dryRun) {
-            setEditorOpen(false);
-            setEditingOriginalId('');
-            setEvidence(null);
-          }
+          if (!dryRun) closeEditor();
         },
       }
     );
@@ -428,6 +432,9 @@ export function PackagesPage() {
 
   const showFilters = (state?.packages.length ?? 0) > 1 || filterKind !== 'all' || Boolean(search.trim());
   const needsGlobalSync = Boolean(state && (state.summary.pendingInstall > 0 || state.summary.failed > 0));
+  const editingInline = Boolean(
+    editorOpen && editingOriginalId && filteredPackages.some(pkg => pkg.id === editingOriginalId)
+  );
 
   function toggleStatusFilter(targetFilter) {
     setFilterKind(prev => (prev === targetFilter ? 'all' : targetFilter));
@@ -581,14 +588,17 @@ export function PackagesPage() {
             )}
           </div>
 
-          {tab === 'packages' && (
-            <>
-              {editorOpen && (
-                <section className="ap-card ap-editor" aria-label={editingOriginalId ? '编辑包配置' : '添加新包'}>
-                  <div className="ap-editor-head">
-                    <h3>{editingOriginalId ? `编辑 ${editingOriginalId}` : '添加包'}</h3>
-                    <Button variant="outline" disabled={busy} onClick={() => setEditorOpen(false)}>收起</Button>
-                  </div>
+          {tab === 'packages' && (() => {
+            const editorPanel = editorOpen ? (
+              <section
+                key={editingOriginalId || 'new'}
+                className="ap-card ap-editor"
+                aria-label={editingOriginalId ? '编辑包配置' : '添加新包'}
+              >
+                <div className="ap-editor-head">
+                  <h3>{editingOriginalId ? `编辑 ${editingOriginalId}` : '添加包'}</h3>
+                  <Button variant="outline" disabled={busy} onClick={closeEditor}>收起</Button>
+                </div>
 
                   <div className="ap-inspect-row">
                     <div className="ap-field">
@@ -890,15 +900,19 @@ export function PackagesPage() {
                   </details>
 
                   <div className="ap-editor-footer">
-                    <Button variant="outline" disabled={busy} onClick={() => setEditorOpen(false)}>取消</Button>
+                    <Button variant="outline" disabled={busy} onClick={closeEditor}>取消</Button>
                     <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>仅保存</Button>
                     <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>保存并预览</Button>
                     <Button variant="primary" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>保存并安装</Button>
                   </div>
                 </section>
-              )}
+            ) : null;
 
-              {filteredPackages.length === 0 ? (
+            return (
+              <>
+                {!editingInline && editorPanel}
+
+                {filteredPackages.length === 0 ? (
                 <div className="ap-empty">
                   <p>
                     {state.packages.length === 0
@@ -914,6 +928,9 @@ export function PackagesPage() {
               ) : (
                 <div className="ap-list">
                   {filteredPackages.map(pkg => {
+                    if (editingInline && pkg.id === editingOriginalId) {
+                      return editorPanel;
+                    }
                     const ver = summarizePackageVersions(pkg);
                     const needsInstall = pkg.targets.some(h => ['not-installed', 'uninstalled', 'failed'].includes(pkg.harnessStatuses[h]?.status));
                     const hasFailed = pkg.targets.some(h => pkg.harnessStatuses[h]?.status === 'failed');
@@ -1125,8 +1142,9 @@ export function PackagesPage() {
                   })}
                 </div>
               )}
-            </>
-          )}
+              </>
+            );
+          })()}
 
           {tab === 'doctor' && (
             <section aria-label="本机扫描与诊断">
