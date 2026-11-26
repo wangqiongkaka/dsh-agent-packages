@@ -345,7 +345,11 @@ async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, option
       warnings: [],
     };
   }
-  const step = await runCustomCommand(pkg, harnessId, action, built.command, '', { ...options, repoSynced: false });
+  const step = await runCustomCommand(pkg, harnessId, action, built.command, '', {
+    ...options,
+    repoSynced: false,
+    claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+  });
   const result = { ...step, method: 'adapter', warnings: built.warnings };
   if (!options.dryRun && action !== 'uninstall') {
     const match = findInstalledPlugin(await readInstalledPlugins(harnessPaths), pkg, harnessId);
@@ -382,16 +386,20 @@ async function runCustomCommand(pkg, harnessId, action, commandTemplate, repoDir
     };
   }
   const runShell = options.runShell ?? defaultRunShell;
+  const extraEnv = {
+    AGENT_PKG_ID: pkg.id,
+    AGENT_PKG_REPO: pkg.repo || '',
+    AGENT_PKG_REF: pkg.ref || '',
+    AGENT_PKG_VERSION: vars.version,
+    AGENT_PKG_HARNESS: harnessId,
+    AGENT_PKG_DIR: repoDir || '',
+  };
+  if (harnessId === 'claude-code' && options.claudeConfigDir) {
+    extraEnv.CLAUDE_CONFIG_DIR = options.claudeConfigDir;
+  }
   const { stdout, stderr } = await runShell(rendered, {
     cwd: repoDir && options.repoSynced ? repoDir : options.rootDir,
-    env: buildUserEnv({
-      AGENT_PKG_ID: pkg.id,
-      AGENT_PKG_REPO: pkg.repo || '',
-      AGENT_PKG_REF: pkg.ref || '',
-      AGENT_PKG_VERSION: vars.version,
-      AGENT_PKG_HARNESS: harnessId,
-      AGENT_PKG_DIR: repoDir || '',
-    }),
+    env: buildUserEnv(extraEnv),
   });
   return {
     harness: harnessId,
@@ -436,7 +444,13 @@ export async function applyPackageAction({
       try {
         let step;
         if (customUninstall) {
-          step = await runCustomCommand(pkg, harnessId, 'uninstall', customUninstall, repoDir, { dryRun, runShell, rootDir, repoSynced: false });
+          step = await runCustomCommand(pkg, harnessId, 'uninstall', customUninstall, repoDir, {
+            dryRun,
+            runShell,
+            rootDir,
+            repoSynced: false,
+            claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+          });
         } else if (pkg.kind === 'plugin') {
           step = await applyPluginToHarness(pkg, harnessId, 'uninstall', harnessPaths, { dryRun, runShell, rootDir });
         } else if (pkg.kind === 'skills-repo') {
@@ -550,7 +564,13 @@ export async function applyPackageAction({
       if (step) {
         // 已安装，跳过
       } else if (customCmd) {
-        step = await runCustomCommand(pkg, harnessId, action, customCmd, repoDir, { dryRun, runShell, rootDir, repoSynced });
+        step = await runCustomCommand(pkg, harnessId, action, customCmd, repoDir, {
+          dryRun,
+          runShell,
+          rootDir,
+          repoSynced,
+          claudeConfigDir: harnessPaths['claude-code']?.explicitConfigDir || '',
+        });
       } else if (pkg.kind === 'plugin') {
         step = await applyPluginToHarness(pkg, harnessId, action, harnessPaths, { dryRun, runShell, rootDir });
       } else if (pkg.kind === 'skills-repo') {

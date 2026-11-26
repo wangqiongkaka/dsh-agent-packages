@@ -1,17 +1,26 @@
 import { realpath } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 
-// dsh-harness-provider 在 DSH 设置中的命名空间（profile 条目 id），其 claudeCommand 是用户启动 Claude Code 的命令，如 reclaude。
+// dsh-harness-provider 在 DSH 设置中的命名空间（profile 条目 id），统一配置 Claude Code 命令（claudeCommand）与配置目录（claudeConfigDir）。
 export const HARNESS_PROVIDER_SETTINGS = 'harness-plugin';
 
-// 读取 harness-provider 当前配置的 claudeCommand；设置服务缺失、未配置或格式不符时返回空串，回落到 claude。
-export function readHarnessClaudeCommand(getSettings) {
+function readHarnessProviderSetting(getSettings, key) {
   try {
-    const value = getSettings()?.describe?.().find(row => row?.ns === HARNESS_PROVIDER_SETTINGS)?.value?.claudeCommand;
+    const value = getSettings()?.describe?.().find(row => row?.ns === HARNESS_PROVIDER_SETTINGS)?.value?.[key];
     return typeof value === 'string' ? value.trim() : '';
   } catch {
     return '';
   }
+}
+
+// 读取 harness-provider 当前配置的 claudeCommand；设置服务缺失、未配置或格式不符时返回空串，回落到 claude。
+export function readHarnessClaudeCommand(getSettings) {
+  return readHarnessProviderSetting(getSettings, 'claudeCommand');
+}
+
+// 读取 harness-provider 当前配置的 claudeConfigDir（对应 CLAUDE_CONFIG_DIR）；未配置或格式不符时返回空串。
+export function readHarnessClaudeConfigDir(getSettings) {
+  return readHarnessProviderSetting(getSettings, 'claudeConfigDir');
 }
 
 const isReclaudeName = name => ['reclaude', 'rec'].includes(basename(name).replace(/\.(?:exe|cmd|bat)$/i, '').toLowerCase());

@@ -484,7 +484,10 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已�
   assert.ok(probes.includes('reclaude status --json'));
 
   const scan = await service.action({ type: 'local.scan' });
+  const accountConfigDir = join(dataDir, 'claude', 'accounts', '1001', 'config');
   assert.equal(scan.report.harnesses['claude-code'].plugins.find(p => p.name === 'ponytail').managedBy, 'ponytail');
+  assert.equal(scan.report.harnesses['claude-code'].skillsDir, join(accountConfigDir, 'skills'));
+  assert.equal(scan.report.harnesses['claude-code'].mcpFile, join(accountConfigDir, '.claude.json'));
 
   // 插件命令使用 reclaude，市场已在该账号登记时只刷新市场
   await service.action({ type: 'package.upgrade', id: 'ponytail', harnesses: ['claude-code'] });
@@ -514,16 +517,140 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已�
   executed.length = 0;
   await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
   assert.deepEqual(executed, ["claude plugin marketplace add 'DietrichGebert/ponytail' && claude plugin install ponytail@ponytail"]);
+  const defaultState = await service.state();
+  const defaultClaude = defaultState.harnesses.find(h => h.id === 'claude-code');
+  assert.equal(defaultClaude.skillsDir, join(homeDir, '.claude', 'skills'));
+  assert.equal(defaultClaude.mcpFile, join(homeDir, '.claude.json'));
 });
 
-test('读取 harness-provider 的 claudeCommand：缺少设置服务或读取出错时回落为空', async () => {
-  const { readHarnessClaudeCommand } = await import('../src/claude-command.mjs');
+test('dsh-harness-provider 显式配置 claudeConfigDir：优先级高于 reclaude 探测，统一对齐 skills、.claude.json 与 CLAUDE_CONFIG_DIR', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-claude-dir-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const upstream = await createSampleSkillsRepo(base);
+  const homeDir = join(base, 'home');
+  const dshHome = join(homeDir, '.dsh');
+  const expectedConfigDir = join(homeDir, '.rec', 'claude', 'accounts', '2048', 'config');
+
+  let probeCount = 0;
+  const execImpl = async (file, args, options) => {
+    if (file === 'reclaude') {
+      probeCount++;
+      throw new Error('显式配置 claudeConfigDir 时不应探测 reclaude');
+    }
+    return execFileAsync(file, args, options);
+  };
+  const shellCalls = [];
+  const runShell = async (command, options) => {
+    shellCalls.push({ command, claudeConfigDir: options?.env?.CLAUDE_CONFIG_DIR });
+    return { stdout: 'ok', stderr: '' };
+  };
+
+  let configuredDir = '~/.rec/claude/accounts/2048/config';
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome,
+    claudeCommand: () => 'reclaude',
+    claudeConfigDir: () => configuredDir,
+    execImpl,
+    runShell,
+  });
+  await service.init();
+
+  // 1. state 与 local.scan 均反映展开后的配置目录，且不触发 reclaude 探测
+  const state = await service.state();
+  const claudeHarness = state.harnesses.find(h => h.id === 'claude-code');
+  assert.equal(claudeHarness.skillsDir, join(expectedConfigDir, 'skills'));
+  assert.equal(claudeHarness.mcpFile, join(expectedConfigDir, '.claude.json'));
+  assert.equal(probeCount, 0);
+
+  // 2. 安装 Skills 到 <claudeConfigDir>/skills，不落到默认 ~/.claude/skills
+  await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: {
+      id: 'dir-skills',
+      name: 'Dir Skills',
+      kind: 'skills-repo',
+      repo: upstream,
+      ref: 'v1.0.0',
+      targets: ['claude-code'],
+    },
+  });
+  assert.equal((await lstat(join(expectedConfigDir, 'skills', 'alpha'))).isSymbolicLink(), true);
+  await assert.rejects(() => lstat(join(homeDir, '.claude', 'skills', 'alpha')));
+
+  // 3. 安装 MCP 到 <claudeConfigDir>/.claude.json，不落到默认 ~/.claude.json
+  await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: {
+      id: 'dir-mcp',
+      name: 'Dir MCP',
+      kind: 'mcp',
+      repo: 'https://github.com/example/dir-mcp',
+      version: '1.2.3',
+      targets: ['claude-code'],
+      mcp: { serverName: 'dir-mcp', transport: 'stdio', command: 'npx', args: ['-y', 'dir-mcp@{{version}}'] },
+    },
+  });
+  const mcpServers = await readJsonMcpServers(join(expectedConfigDir, '.claude.json'));
+  assert.deepEqual(mcpServers['dir-mcp'].args, ['-y', 'dir-mcp@1.2.3']);
+  await assert.rejects(() => lstat(join(homeDir, '.claude.json')));
+
+  // 4. 插件与自定义命令仅对 claude-code 透传 CLAUDE_CONFIG_DIR，不影响 codex
+  await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: {
+      id: 'dir-installer',
+      name: 'Dir Installer',
+      kind: 'installer',
+      repo: 'https://github.com/example/dir-installer',
+      targets: ['codex', 'claude-code'],
+      commands: {
+        codex: { install: 'echo codex-install' },
+        'claude-code': { install: 'echo claude-install' },
+      },
+    },
+  });
+  assert.deepEqual(shellCalls, [
+    { command: 'echo codex-install', claudeConfigDir: undefined },
+    { command: 'echo claude-install', claudeConfigDir: expectedConfigDir },
+  ]);
+  assert.equal(probeCount, 0);
+
+  // 5. 动态清空配置后立即回落
+  configuredDir = '';
+  const fallbackService = new PackageManagerService({
+    root: join(base, 'root2'),
+    homeDir,
+    dshHome,
+    claudeConfigDir: () => configuredDir,
+  });
+  await fallbackService.init();
+  const fallbackClaude = (await fallbackService.state()).harnesses.find(h => h.id === 'claude-code');
+  assert.equal(fallbackClaude.skillsDir, join(homeDir, '.claude', 'skills'));
+  assert.equal(fallbackClaude.mcpFile, join(homeDir, '.claude.json'));
+});
+
+test('读取 harness-provider 的 claudeCommand 与 claudeConfigDir：缺少设置服务或读取出错时回落为空', async () => {
+  const { readHarnessClaudeCommand, readHarnessClaudeConfigDir } = await import('../src/claude-command.mjs');
   const settings = rows => () => ({ describe: () => rows });
   assert.equal(readHarnessClaudeCommand(settings([{ ns: 'harness-plugin', value: { claudeCommand: ' reclaude ' } }])), 'reclaude');
   assert.equal(readHarnessClaudeCommand(settings([{ ns: 'other', value: { claudeCommand: 'x' } }])), '');
   assert.equal(readHarnessClaudeCommand(settings([{ ns: 'harness-plugin', value: { claudeCommand: 1 } }])), '');
   assert.equal(readHarnessClaudeCommand(() => undefined), '');
   assert.equal(readHarnessClaudeCommand(() => { throw new Error('no settings'); }), '');
+
+  assert.equal(
+    readHarnessClaudeConfigDir(settings([{ ns: 'harness-plugin', value: { claudeConfigDir: ' ~/.rec/claude/accounts/1001/config ' } }])),
+    '~/.rec/claude/accounts/1001/config',
+  );
+  assert.equal(readHarnessClaudeConfigDir(settings([{ ns: 'other', value: { claudeConfigDir: '/tmp/x' } }])), '');
+  assert.equal(readHarnessClaudeConfigDir(settings([{ ns: 'harness-plugin', value: { claudeConfigDir: null } }])), '');
+  assert.equal(readHarnessClaudeConfigDir(() => undefined), '');
+  assert.equal(readHarnessClaudeConfigDir(() => { throw new Error('no settings'); }), '');
 });
 
 test('版本展示摘要：统一格式化语义版本、分支+提交、多端版本不一致与更新对比', () => {

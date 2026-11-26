@@ -1,5 +1,4 @@
-import { join } from 'node:path';
-import { HARNESS_IDS, HARNESS_META, resolveHarnessPaths } from './constants.mjs';
+import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
 import { normalizeVersion, unsupportedReason } from './shared.mjs';
 import { PackageStore, normalizePackage } from './store.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
@@ -26,30 +25,33 @@ export class PackageManagerService {
     if (!options.root) throw new Error('必须提供配置保存目录 root');
     this.root = options.root;
     this.store = new PackageStore(this.root);
+    const staticClaudeConfigDir = typeof options.claudeConfigDir === 'string' ? options.claudeConfigDir.trim() : '';
     this.harnessPaths = resolveHarnessPaths({
       homeDir: options.homeDir,
       dshHome: options.dshHome,
       codexHome: options.codexHome,
-      claudeConfigDir: options.claudeConfigDir,
+      claudeConfigDir: staticClaudeConfigDir,
     });
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.execImpl = options.execImpl ?? defaultExecFile;
     this.runShell = options.runShell ?? defaultRunShell;
     this.githubToken = options.githubToken;
-    // Claude Code 启动命令（如 reclaude），可为取值函数以读到最新设置；空值回落到 claude
+    // Claude Code 启动命令（如 reclaude）与配置目录，均可为取值函数以读到 dsh-harness-provider 最新设置
     this.claudeCommand = options.claudeCommand ?? '';
-    this.explicitClaudeConfigDir = options.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || '';
+    this.claudeConfigDir = options.claudeConfigDir ?? '';
   }
 
-  // 每次操作读取最新的 Claude Code 命令；reclaude 时按其当前账号的配置目录识别插件，显式 CLAUDE_CONFIG_DIR 优先。
+  // 每次操作读取最新的 Claude Code 命令与配置目录：
+  // 显式 claudeConfigDir（dsh-harness-provider 设置或入参）> 环境变量 CLAUDE_CONFIG_DIR > reclaude 账号探测兜底 > 默认目录。
   async currentHarnessPaths() {
     const configured = typeof this.claudeCommand === 'function' ? this.claudeCommand() : this.claudeCommand;
     const command = (typeof configured === 'string' && configured.trim()) || 'claude';
-    const claude = { ...this.harnessPaths['claude-code'], command };
-    if (!this.explicitClaudeConfigDir && await isReclaudeCommand(command)) {
-      const configDir = await reclaudeConfigDir(command, this.execImpl);
-      if (configDir) claude.pluginsDir = join(configDir, 'plugins');
+    const rawConfigDir = typeof this.claudeConfigDir === 'function' ? this.claudeConfigDir() : this.claudeConfigDir;
+    let configDir = (typeof rawConfigDir === 'string' && rawConfigDir.trim()) || process.env.CLAUDE_CONFIG_DIR?.trim() || '';
+    if (!configDir && await isReclaudeCommand(command)) {
+      configDir = (await reclaudeConfigDir(command, this.execImpl)) || '';
     }
+    const claude = { ...resolveClaudeCodePaths(this.harnessPaths.home, configDir), command };
     return { ...this.harnessPaths, 'claude-code': claude };
   }
 
@@ -60,12 +62,13 @@ export class PackageManagerService {
   }
 
   async state() {
-    const [manifest, lock] = await Promise.all([
+    const [manifest, lock, harnessPaths] = await Promise.all([
       this.store.readManifest(),
       this.store.readLock(),
+      this.currentHarnessPaths(),
     ]);
     const hasPlugins = manifest.packages.some(p => p.kind === 'plugin');
-    const livePlugins = hasPlugins ? await readInstalledPlugins(await this.currentHarnessPaths()) : {};
+    const livePlugins = hasPlugins ? await readInstalledPlugins(harnessPaths) : {};
     let outdatedCount = 0;
     let failedCount = 0;
     let pendingInstallCount = 0;
@@ -120,8 +123,8 @@ export class PackageManagerService {
       lockFile: this.store.lockFile,
       harnesses: HARNESS_IDS.map(id => ({
         ...HARNESS_META[id],
-        skillsDir: this.harnessPaths[id].skillsDir,
-        mcpFile: this.harnessPaths[id].mcpFile,
+        skillsDir: harnessPaths[id].skillsDir,
+        mcpFile: harnessPaths[id].mcpFile,
       })),
       summary: {
         total: packages.length,
