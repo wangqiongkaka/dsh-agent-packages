@@ -1,8 +1,9 @@
 import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
 import { normalizeVersion, unsupportedReason } from './shared.mjs';
-import { PackageStore, normalizePackage } from './store.mjs';
+import { PackageStore, normalizePackage, normalizeRepoUrl, normalizeSettings } from './store.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
 import { applyPackageAction, defaultExecFile, defaultRunShell, probeSharedCliVersion } from './installer.mjs';
+import { analyzeRepoWithHarness, defaultSpawnWithInput, listAnalyzerModels } from './repo-analyzer.mjs';
 import { readInstalledPlugins, scanLocalEnvironment } from './scanner.mjs';
 import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
@@ -35,24 +36,29 @@ export class PackageManagerService {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.execImpl = options.execImpl ?? defaultExecFile;
     this.runShell = options.runShell ?? defaultRunShell;
+    this.spawnImpl = options.spawnImpl ?? defaultSpawnWithInput;
     this.githubToken = options.githubToken;
-    // Claude Code 启动命令（如 reclaude）与配置目录，均可为取值函数以读到 dsh-harness-provider 最新设置
+    // Claude Code / Codex 启动命令与配置目录，均可为取值函数以读到 dsh-harness-provider 最新设置
     this.claudeCommand = options.claudeCommand ?? '';
     this.claudeConfigDir = options.claudeConfigDir ?? '';
+    this.codexCommand = options.codexCommand ?? '';
   }
 
-  // 每次操作读取最新的 Claude Code 命令与配置目录：
+  // 每次操作读取最新的 Claude Code / Codex 命令与配置目录：
   // 显式 claudeConfigDir（dsh-harness-provider 设置或入参）> 环境变量 CLAUDE_CONFIG_DIR > reclaude 账号探测兜底 > 默认目录。
   async currentHarnessPaths() {
     const configured = typeof this.claudeCommand === 'function' ? this.claudeCommand() : this.claudeCommand;
     const command = (typeof configured === 'string' && configured.trim()) || 'claude';
+    const configuredCodex = typeof this.codexCommand === 'function' ? this.codexCommand() : this.codexCommand;
+    const codexCommand = (typeof configuredCodex === 'string' && configuredCodex.trim()) || 'codex';
     const rawConfigDir = typeof this.claudeConfigDir === 'function' ? this.claudeConfigDir() : this.claudeConfigDir;
     let configDir = (typeof rawConfigDir === 'string' && rawConfigDir.trim()) || process.env.CLAUDE_CONFIG_DIR?.trim() || '';
     if (!configDir && await isReclaudeCommand(command)) {
       configDir = (await reclaudeConfigDir(command, this.execImpl)) || '';
     }
     const claude = { ...resolveClaudeCodePaths(this.harnessPaths.home, configDir), command };
-    return { ...this.harnessPaths, 'claude-code': claude };
+    const codex = { ...this.harnessPaths.codex, command: codexCommand };
+    return { ...this.harnessPaths, codex, 'claude-code': claude };
   }
 
   async init() {
@@ -121,6 +127,7 @@ export class PackageManagerService {
       rootDir: this.root,
       manifestFile: this.store.manifestFile,
       lockFile: this.store.lockFile,
+      settings: manifest.settings,
       harnesses: HARNESS_IDS.map(id => ({
         ...HARNESS_META[id],
         skillsDir: harnessPaths[id].skillsDir,
@@ -145,13 +152,82 @@ export class PackageManagerService {
     const currentPaths = async () => (paths ??= await this.currentHarnessPaths());
 
     switch (input.type) {
+      case 'settings.save': {
+        const manifest = await this.store.readManifest();
+        const nextSettings = normalizeSettings(
+          input.settings ?? { analyzer: input.analyzer },
+          manifest.settings
+        );
+        await this.store.writeManifest({ ...manifest, settings: nextSettings });
+        const harnessLabel = nextSettings.analyzer.harness
+          ? `${HARNESS_META[nextSettings.analyzer.harness]?.label || nextSettings.analyzer.harness}${nextSettings.analyzer.model ? ` · ${nextSettings.analyzer.model}` : '（默认模型）'}`
+          : '静态规则';
+        return {
+          message: `已保存全局解析配置：${harnessLabel}`,
+          settings: nextSettings,
+          state: await this.state(),
+        };
+      }
+
+      case 'analyzer.models': {
+        const harness = typeof input.harness === 'string' ? input.harness.trim() : '';
+        try {
+          const result = await listAnalyzerModels(harness, await currentPaths(), { execImpl: this.execImpl });
+          return {
+            message: result.error || `已加载 ${HARNESS_META[harness]?.label || harness} 可用模型（${result.models.length}）`,
+            ...result,
+          };
+        } catch (error) {
+          throw new HttpError(400, error.message);
+        }
+      }
+
       case 'repo.inspect': {
-        const inspected = await inspectGitHubRepo(input.repo, {
-          fetchImpl: this.fetchImpl,
-          execCommand: this.execImpl,
-          token: this.githubToken,
+        const manifest = await this.store.readManifest();
+        const configured = manifest.settings?.analyzer ?? { harness: '', model: '' };
+        const useStaticOnly = input.mode === 'static';
+        const analyzerHarness = useStaticOnly
+          ? ''
+          : (typeof input.harness === 'string' && input.harness.trim()) || configured.harness || '';
+        const analyzerModel = useStaticOnly
+          ? ''
+          : (typeof input.model === 'string' ? input.model.trim() : configured.model || '');
+
+        let inspected = null;
+        let staticError = '';
+        try {
+          inspected = await inspectGitHubRepo(input.repo, {
+            fetchImpl: this.fetchImpl,
+            execCommand: this.execImpl,
+            token: this.githubToken,
+          });
+        } catch (error) {
+          if (!analyzerHarness) throw error;
+          staticError = error.message;
+        }
+
+        if (!analyzerHarness) {
+          return { message: '已解析 GitHub 仓库信息', ...inspected };
+        }
+
+        const repoUrl = inspected?.draft?.repo || normalizeRepoUrl(input.repo);
+        const analyzed = await analyzeRepoWithHarness({
+          repoUrl,
+          harness: analyzerHarness,
+          model: analyzerModel,
+          baseInspection: inspected,
+          harnessPaths: await currentPaths(),
+          execImpl: this.execImpl,
+          spawnImpl: this.spawnImpl,
         });
-        return { message: '已解析 GitHub 仓库信息', ...inspected };
+        if (staticError && analyzed.evidence?.ai) {
+          analyzed.evidence.ai.warnings = [
+            ...analyzed.evidence.ai.warnings,
+            `GitHub API 元信息获取失败，已直接基于克隆源码完成分析（${staticError}）`,
+          ];
+        }
+        const label = `${HARNESS_META[analyzerHarness]?.label || analyzerHarness}${analyzerModel ? ` · ${analyzerModel}` : ''}`;
+        return { message: `已通过 ${label} 深度分析仓库`, ...analyzed };
       }
 
       case 'package.save': {
@@ -191,7 +267,7 @@ export class PackageManagerService {
         const nextPackages = [...manifest.packages];
         if (existingIndex >= 0) nextPackages[existingIndex] = normalized;
         else nextPackages.push(normalized);
-        await this.store.writeManifest({ version: 1, packages: nextPackages });
+        await this.store.writeManifest({ ...manifest, version: 1, packages: nextPackages });
 
         let steps = [];
         if (input.installNow) {

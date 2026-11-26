@@ -1,7 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { HARNESS_IDS, PACKAGE_KINDS } from './constants.mjs';
+import { ANALYZER_HARNESS_IDS, HARNESS_IDS, PACKAGE_KINDS } from './constants.mjs';
+
+export function normalizeSettings(input, existing) {
+  const rawAnalyzer = isPlainObject(input?.analyzer) ? input.analyzer : (existing?.analyzer ?? {});
+  const rawHarness = typeof rawAnalyzer.harness === 'string' ? rawAnalyzer.harness.trim() : '';
+  const harness = ANALYZER_HARNESS_IDS.includes(rawHarness) ? rawHarness : '';
+  const model = harness && typeof rawAnalyzer.model === 'string' ? rawAnalyzer.model.trim() : '';
+  return {
+    analyzer: {
+      harness,
+      model,
+    },
+  };
+}
 
 export function isPlainObject(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -205,11 +218,12 @@ export class PackageStore {
       }
       return {
         version: 1,
+        settings: normalizeSettings(data.settings),
         packages: data.packages.map(pkg => normalizePackage(pkg, pkg)),
       };
     } catch (error) {
       if (error?.code === 'ENOENT') {
-        return { version: 1, packages: [] };
+        return { version: 1, settings: normalizeSettings({}), packages: [] };
       }
       throw new Error(`读取包清单失败（${this.manifestFile}）：${error.message}`);
     }
@@ -219,6 +233,7 @@ export class PackageStore {
     const payload = {
       version: 1,
       updatedAt: new Date().toISOString(),
+      settings: normalizeSettings(manifest.settings),
       packages: manifest.packages,
     };
     await writeFileAtomic(this.manifestFile, JSON.stringify(payload, null, 2) + '\n');

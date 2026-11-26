@@ -43,7 +43,13 @@ try {
 
   // 造一点本机扫描夹具数据（仅在临时目录，不碰真实本机配置）
   await mkdir(join(homeDir, '.codex'), { recursive: true });
-  await writeFile(join(homeDir, '.codex', 'config.toml'), '[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve"]\n');
+  await writeFile(join(homeDir, '.codex', 'config.toml'), 'model = "gpt-6.2-sol"\n\n[mcp_servers.codegraph]\ncommand = "codegraph"\nargs = ["serve"]\n');
+  await writeFile(join(homeDir, '.codex', 'models_cache.json'), JSON.stringify({
+    models: [
+      { slug: 'gpt-6.2-sol', display_name: 'GPT-6.2-Sol', visibility: 'list' },
+      { slug: 'o4-mini', display_name: 'o4-mini', visibility: 'list' },
+    ],
+  }));
   await mkdir(join(homeDir, '.gemini', 'skills', 'legacy-firecrawl'), { recursive: true });
   await mkdir(join(homeDir, '.gemini', 'config', 'skills'), { recursive: true });
   await symlink(join(base, 'deleted-skill'), join(homeDir, '.gemini', 'config', 'skills', 'stale-link'));
@@ -142,6 +148,45 @@ try {
     fetchImpl: mockFetch,
     githubToken: '',
     runShell: async cmd => ({ stdout: `模拟执行成功：${cmd}`, stderr: '' }),
+    execImpl: async (file, args, options) => {
+      if (file === 'git' && args[0] === 'clone' && args.includes('--depth')) {
+        const dest = args[args.length - 1];
+        return execFileAsync('git', ['clone', '--depth', '1', '--quiet', upstreamSkills, dest], options);
+      }
+      return execFileAsync(file, args, options);
+    },
+    spawnImpl: async (file, args) => {
+      const payload = {
+        kind: 'installer',
+        name: 'codegraph',
+        description: '本地语义代码图谱 CLI 与多端 MCP 工具（由 Codex 深度分析生成）',
+        version: '1.6.4',
+        npmPackage: '@colbymchenry/codegraph',
+        targets: ['codex', 'claude-code', 'antigravity', 'dsh'],
+        skills: { include: [], mode: 'symlink' },
+        plugin: { name: '', marketplace: '', harnesses: [] },
+        mcp: { serverName: 'codegraph', transport: 'stdio', command: '', args: [], url: '', envRefs: [] },
+        commands: {
+          shared: {
+            install: 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh',
+            upgrade: 'codegraph upgrade {{version}}',
+            uninstall: 'codegraph uninstall --yes',
+            version: 'codegraph --version',
+          },
+          codex: { install: 'codegraph install --target codex --yes', upgrade: '', uninstall: 'codegraph uninstall --target codex --yes --keep-cli' },
+          'claude-code': { install: 'codegraph install --target claude --yes', upgrade: '', uninstall: 'codegraph uninstall --target claude --yes --keep-cli' },
+          antigravity: { install: 'codegraph install --target antigravity --yes', upgrade: '', uninstall: 'codegraph uninstall --target antigravity --yes --keep-cli' },
+          dsh: { install: 'codegraph install --target dsh --yes', upgrade: '', uninstall: 'codegraph uninstall --target dsh --yes --keep-cli' },
+        },
+        summary: '识别为自带 CLI 与多端安装器的复合工具，已生成全局安装/升级/版本探测与 4 端无交互接入方案。',
+        warnings: ['首次接入后请重启对应 Harness 会话以加载 MCP 工具'],
+      };
+      if (file === 'codex') {
+        const outIdx = args.indexOf('-o');
+        if (outIdx > 0) await writeFile(args[outIdx + 1], JSON.stringify(payload), 'utf8');
+      }
+      return { stdout: JSON.stringify(payload), stderr: '' };
+    },
   });
   await service.init();
 
@@ -288,6 +333,34 @@ try {
   // 删除测试中保存的 codegraph 预览项，保持后续包数量断言一致
   await page.getByRole('button', { name: 'codegraph 更多操作' }).click();
   await page.getByRole('menuitem', { name: '从清单移除' }).click();
+
+  // 1c. 全局解析设置：切换为 Codex + 选择模型 → 深度分析仓库 → 校验 AI 摘要与提示 → 切回静态规则
+  await page.getByRole('button', { name: '解析设置' }).click();
+  await page.getByRole('heading', { name: '全局解析设置' }).waitFor();
+  await page.locator('#ap-analyzer-harness').click();
+  await page.getByRole('option', { name: /Codex/ }).click();
+  await page.locator('#ap-analyzer-model').waitFor();
+  await page.locator('#ap-analyzer-model').click();
+  await page.getByRole('option', { name: /GPT-6\.2-Sol/ }).click();
+  await page.screenshot({ path: 'artifacts/packages-analyzer-settings.png', fullPage: true });
+  await page.getByRole('button', { name: '保存设置' }).click();
+  await page.getByText(/已保存全局解析配置：Codex · gpt-6\.2-sol/).waitFor();
+
+  await page.getByRole('button', { name: '添加包' }).click();
+  await page.getByText(/当前解析：Codex · gpt-6\.2-sol（深度模式）/).waitFor();
+  await page.locator('#ap-repo').fill('https://github.com/colbymchenry/codegraph.git');
+  await page.getByRole('button', { name: '解析仓库' }).click();
+  await page.locator('.ap-ai-evidence').waitFor();
+  assert.match(await page.locator('.ap-ai-evidence').innerText(), /深度分析 · Codex \(gpt-6\.2-sol\)/);
+  assert.match(await page.locator('.ap-ai-evidence').innerText(), /首次接入后请重启对应 Harness 会话/);
+  await page.screenshot({ path: 'artifacts/packages-ai-analysis.png', fullPage: true });
+  await page.getByRole('button', { name: '收起' }).click();
+
+  // 恢复默认静态规则设置，确保后续用例洁净
+  await page.getByRole('button', { name: '解析设置' }).click();
+  await page.locator('#ap-analyzer-harness').click();
+  await page.getByRole('option', { name: /静态规则/ }).click();
+  await page.getByRole('button', { name: '保存设置' }).click();
 
   // 2. 检查更新并验证出现版本对比徽章与状态化主按钮，再点击升级
   await page.getByRole('button', { name: '检查更新' }).click();

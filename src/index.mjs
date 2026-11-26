@@ -4,7 +4,7 @@ import z from '@deepseek-ai/schemastery';
 import { ENDPOINT, PLUGIN_ID } from './constants.mjs';
 import { PackageManagerService } from './service.mjs';
 import { apiHandler } from './api.mjs';
-import { readHarnessClaudeCommand, readHarnessClaudeConfigDir } from './claude-command.mjs';
+import { readHarnessClaudeCommand, readHarnessClaudeConfigDir, readHarnessCodexCommand } from './claude-command.mjs';
 
 export const name = PLUGIN_ID;
 export const inject = [];
@@ -16,11 +16,12 @@ export const Config = z.object({
 export async function apply(ctx, config = {}) {
   const root = resolve(config.root || join(process.env.DSH_HOME || join(homedir(), '.dsh'), PLUGIN_ID));
   const getSettings = () => ctx.get('settings');
-  // 与 dsh-harness-provider 共用 Claude Code 命令（如 reclaude）和配置目录（claudeConfigDir），每次操作读取最新设置
+  // 与 dsh-harness-provider 共用 Claude Code / Codex 命令和配置目录，每次操作读取最新设置
   const manager = new PackageManagerService({
     root,
     claudeCommand: () => readHarnessClaudeCommand(getSettings),
     claudeConfigDir: () => readHarnessClaudeConfigDir(getSettings),
+    codexCommand: () => readHarnessCodexCommand(getSettings),
   });
   try {
     await manager.init();

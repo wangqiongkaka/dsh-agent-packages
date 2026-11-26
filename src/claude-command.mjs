@@ -23,6 +23,11 @@ export function readHarnessClaudeConfigDir(getSettings) {
   return readHarnessProviderSetting(getSettings, 'claudeConfigDir');
 }
 
+// 读取 harness-provider 当前配置的 codexCommand；未配置时回落到 codex。
+export function readHarnessCodexCommand(getSettings) {
+  return readHarnessProviderSetting(getSettings, 'codexCommand');
+}
+
 const isReclaudeName = name => ['reclaude', 'rec'].includes(basename(name).replace(/\.(?:exe|cmd|bat)$/i, '').toLowerCase());
 
 export async function isReclaudeCommand(command) {

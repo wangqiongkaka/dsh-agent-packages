@@ -11,7 +11,7 @@
   2. `plugin`：插件式 Skills（如 ponytail），仓库带 `.claude-plugin/`、`.codex-plugin/` 或 `.agents/plugins/` 清单。安装、升级、卸载调用各 Harness 自己的插件命令（`claude plugin`、`codex plugin`、`agy plugin`），Claude Code 端沿用 dsh-harness-provider 统一配置的 `claudeCommand`（如 `reclaude`）与 `claudeConfigDir`（执行命令时自动透传 `CLAUDE_CONFIG_DIR`；未显式配置且命令为 `reclaude` 时按其当前账号目录自动兜底）。插件声明的 Hooks、命令与 Skills 由 Harness 一并注册和清理，本插件不直接改写 hooks 配置。插件已装在某端时，「安装」「全部同步」和重复添加都不会再次执行安装命令。Codex 需在 `/hooks` 中信任插件 Hooks 后生效；DSH 原生暂无插件机制，会跳过。
   3. `mcp`：关联 GitHub 仓库与锁定版本号，支持 `{{version}}` 模板变量，安全局部更新 Codex TOML（保留原注释与其他节）和 Claude / Antigravity JSON（原子写入、不覆盖运行时状态）。
   4. `installer`：针对自带 CLI 与多端安装器生命周期的复合项目（如 CodeGraph），支持配置每次操作仅执行一次的全局 CLI 命令（`install` / `upgrade` / `uninstall` / `version` 版本检测）以及各 Harness 的分端接入与卸载命令；全部端卸载完成后才执行全局卸载命令。
-- **GitHub 仓库解析**：输入 `owner/repo` 或完整 URL 自动识别仓库类型（区分项目自用 `.claude/skills` 与对外分发的 Skills）、最新 Release / Commit、Skills 列表、插件清单及其安装时注册的 Hooks、npm/Python 包与 CLI 安装器信息，以及 README 中的官方安装/升级/卸载与分端命令。
+- **GitHub 仓库解析与 AI 深度分析**：默认通过静态规则快速识别仓库类型（区分项目自用 `.claude/skills` 与对外分发的 Skills）、最新 Release / Commit、Skills 列表、插件清单及其 Hooks、npm/Python 包与 CLI 安装器命令；也支持在顶部「解析设置」中全局指定 Codex / Claude Code / Antigravity 及模型，点击「解析仓库」时浅克隆仓库到隔离临时目录进行只读深度分析，为复合型仓库生成各端安装、升级、卸载与版本检测草稿（仅回填供审阅，绝不自动执行）。
 - **只通过添加进入清单**：粘贴 GitHub 地址解析后添加。添加时可以重命名（包 ID 留空时按名称生成，与已有包冲突时提示重命名）；保存前按包类型和插件清单检查各 Harness 是否支持，不支持的端显示原因，勾选后禁止保存（为该端填写自定义安装命令后可装）；同一来源再次添加只更新名称与目标端（锁定版本不变，版本变化走升级），不重复安装。
 - **统一版本检查与批量同步**：一键查更新、一键升级、支持 Dry-Run 预览变更，以及只读扫描本机现有 Skills / 插件 / MCP 状态做诊断（不提供本机导入）。
 - **DSH 设置管理页**：挂载在「设置 → Skills & MCP」，支持桌面端与窄屏视图。

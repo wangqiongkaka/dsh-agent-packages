@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
+  ANALYZER_HARNESS_IDS,
   CARD_KIND_LABELS,
   ENDPOINT,
   HARNESS_IDS,
@@ -204,6 +205,17 @@ const MCP_TRANSPORT_OPTIONS = [
   { value: 'http', label: 'HTTP' },
 ];
 
+const ANALYZER_HARNESS_OPTIONS = [
+  { value: '', label: '静态规则', meta: '快速' },
+  ...ANALYZER_HARNESS_IDS.map(id => ({
+    value: id,
+    label: HARNESS_META[id].label,
+    meta: '深度分析',
+  })),
+];
+
+const CUSTOM_MODEL_VALUE = '__custom__';
+
 function Select({
   id,
   value,
@@ -397,6 +409,13 @@ export function PackagesPage() {
   const [doctorHarness, setDoctorHarness] = useState(HARNESS_IDS[0]);
   const [openMenuId, setOpenMenuId] = useState('');
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [analyzerHarness, setAnalyzerHarness] = useState('');
+  const [analyzerModel, setAnalyzerModel] = useState('');
+  const [customModelMode, setCustomModelMode] = useState(false);
+  const [modelsByHarness, setModelsByHarness] = useState({});
+  const [loadingModels, setLoadingModels] = useState(false);
+
   useEffect(() => {
     if (!openMenuId) return;
     const onPointerDown = event => {
@@ -421,6 +440,8 @@ export function PackagesPage() {
         if (!active) return;
         setSessionKey(data.key);
         setState(data);
+        setAnalyzerHarness(data.settings?.analyzer?.harness || '');
+        setAnalyzerModel(data.settings?.analyzer?.model || '');
       })
       .catch(cause => {
         if (active) setError(cause.message);
@@ -461,6 +482,69 @@ export function PackagesPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function fetchModelsForHarness(harness, { force = false } = {}) {
+    if (!harness || !sessionKey) return;
+    if (!force && modelsByHarness[harness]) return;
+    setLoadingModels(true);
+    try {
+      const res = await postWithAutoKey({ type: 'analyzer.models', harness });
+      setModelsByHarness(prev => ({
+        ...prev,
+        [harness]: {
+          models: Array.isArray(res.models) ? res.models : [],
+          defaultModel: res.defaultModel || '',
+          error: res.error || '',
+        },
+      }));
+    } catch (cause) {
+      setModelsByHarness(prev => ({
+        ...prev,
+        [harness]: { models: [], defaultModel: '', error: cause.message },
+      }));
+    } finally {
+      setLoadingModels(false);
+    }
+  }
+
+  function openSettingsPanel() {
+    const saved = state?.settings?.analyzer ?? { harness: '', model: '' };
+    const nextHarness = saved.harness || '';
+    const nextModel = saved.model || '';
+    setAnalyzerHarness(nextHarness);
+    setAnalyzerModel(nextModel);
+    const cached = nextHarness ? modelsByHarness[nextHarness]?.models : null;
+    setCustomModelMode(Boolean(nextModel && cached && !cached.some(m => m.id === nextModel)));
+    setSettingsOpen(true);
+    if (nextHarness) void fetchModelsForHarness(nextHarness);
+  }
+
+  function handleSelectAnalyzerHarness(nextHarness) {
+    setAnalyzerHarness(nextHarness);
+    setAnalyzerModel('');
+    setCustomModelMode(false);
+    if (nextHarness) void fetchModelsForHarness(nextHarness);
+  }
+
+  async function saveAnalyzerSettings() {
+    await runAction(
+      {
+        type: 'settings.save',
+        analyzer: {
+          harness: analyzerHarness,
+          model: analyzerHarness ? analyzerModel.trim() : '',
+        },
+      },
+      {
+        onSuccess: res => {
+          const saved = res.settings?.analyzer ?? { harness: '', model: '' };
+          setAnalyzerHarness(saved.harness || '');
+          setAnalyzerModel(saved.model || '');
+          setSettingsOpen(false);
+        },
+      }
+    );
   }
 
   async function handleInspectRepo() {
@@ -681,6 +765,30 @@ export function PackagesPage() {
   const editingInline = Boolean(
     editorOpen && editingOriginalId && filteredPackages.some(pkg => pkg.id === editingOriginalId)
   );
+  const savedAnalyzer = state?.settings?.analyzer ?? { harness: '', model: '' };
+  const savedAnalyzerLabel = savedAnalyzer.harness
+    ? `${HARNESS_META[savedAnalyzer.harness]?.label || savedAnalyzer.harness}${savedAnalyzer.model ? ` · ${savedAnalyzer.model}` : '（默认模型）'}`
+    : '静态规则';
+  const currentModelInfo = analyzerHarness ? (modelsByHarness[analyzerHarness] ?? null) : null;
+  const currentModels = currentModelInfo?.models ?? [];
+  const modelOptions = useMemo(() => {
+    const opts = [
+      {
+        value: '',
+        label: '默认模型',
+        meta: currentModelInfo?.defaultModel || '',
+      },
+      ...currentModels.map(m => ({
+        value: m.id,
+        label: m.label || m.id,
+        meta: m.label && m.label !== m.id ? m.id : '',
+      })),
+      { value: CUSTOM_MODEL_VALUE, label: '自定义模型…' },
+    ];
+    return opts;
+  }, [currentModels, currentModelInfo]);
+  const modelInList = !analyzerModel || currentModels.some(m => m.id === analyzerModel);
+  const modelSelectValue = customModelMode || !modelInList ? CUSTOM_MODEL_VALUE : analyzerModel;
 
   function toggleStatusFilter(targetFilter) {
     setFilterKind(prev => (prev === targetFilter ? 'all' : targetFilter));
@@ -696,6 +804,13 @@ export function PackagesPage() {
         </div>
         <div className="ap-actions">
           <Button variant="primary" disabled={busy || !state} onClick={openNewEditor}>添加包</Button>
+          <Button
+            variant="outline"
+            disabled={busy || !state}
+            onClick={() => (settingsOpen ? setSettingsOpen(false) : openSettingsPanel())}
+          >
+            解析设置
+          </Button>
           {state && state.packages.length > 0 && (
             <Button
               variant="outline"
@@ -735,6 +850,79 @@ export function PackagesPage() {
         </div>
       )}
       {notice && <div className="ap-banner-notice" role="status">{notice}</div>}
+
+      {state && settingsOpen && (
+        <section className="ap-card ap-settings-card" aria-label="全局解析设置">
+          <div className="ap-editor-head">
+            <h3>全局解析设置</h3>
+            <Button variant="outline" disabled={busy} onClick={() => setSettingsOpen(false)}>收起</Button>
+          </div>
+          <div className="ap-grid">
+            <div className="ap-field">
+              <label htmlFor="ap-analyzer-harness">解析引擎</label>
+              <Select
+                id="ap-analyzer-harness"
+                ariaLabel="解析引擎"
+                value={analyzerHarness}
+                options={ANALYZER_HARNESS_OPTIONS}
+                onChange={handleSelectAnalyzerHarness}
+              />
+            </div>
+            {analyzerHarness && (
+              <div className="ap-field">
+                <label htmlFor="ap-analyzer-model">模型</label>
+                <Select
+                  id="ap-analyzer-model"
+                  ariaLabel="模型"
+                  disabled={loadingModels}
+                  value={modelSelectValue}
+                  options={modelOptions}
+                  onChange={next => {
+                    if (next === CUSTOM_MODEL_VALUE) {
+                      setCustomModelMode(true);
+                    } else {
+                      setCustomModelMode(false);
+                      setAnalyzerModel(next);
+                    }
+                  }}
+                />
+              </div>
+            )}
+            {analyzerHarness && (customModelMode || !modelInList) && (
+              <div className="ap-field">
+                <label htmlFor="ap-analyzer-model-custom">自定义模型</label>
+                <input
+                  id="ap-analyzer-model-custom"
+                  className="ap-input"
+                  placeholder="输入模型 ID"
+                  value={analyzerModel}
+                  onChange={e => setAnalyzerModel(e.target.value)}
+                />
+              </div>
+            )}
+          </div>
+          {analyzerHarness && currentModelInfo?.error && (
+            <p className="ap-field-error" role="alert">{currentModelInfo.error}</p>
+          )}
+          <p className="ap-help">
+            {analyzerHarness
+              ? '启用后，点击「解析仓库」将浅克隆仓库到临时目录，由所选 Harness 只读深度分析并生成各端安装、升级与卸载方案；命令仅回填草稿，确认后再执行。'
+              : '当前使用静态规则快速解析；遇到 Skills + MCP 等复合仓库时，可选择 Codex、Claude Code 或 Antigravity 开启深度分析。'}
+          </p>
+          <div className="ap-editor-footer">
+            {analyzerHarness && (
+              <Button
+                variant="outline"
+                disabled={busy || loadingModels}
+                onClick={() => void fetchModelsForHarness(analyzerHarness, { force: true })}
+              >
+                {loadingModels ? '刷新中…' : '刷新模型'}
+              </Button>
+            )}
+            <Button variant="primary" disabled={busy} onClick={() => void saveAnalyzerSettings()}>保存设置</Button>
+          </div>
+        </section>
+      )}
 
       {!state ? (
         <p className="ap-help" role="status">{error ? '请检查插件后台状态。' : '正在读取包清单与锁文件…'}</p>
@@ -854,20 +1042,50 @@ export function PackagesPage() {
                       disabled={busy || inspecting || !draft.repo.trim()}
                       onClick={() => void handleInspectRepo()}
                     >
-                      {inspecting ? '解析中…' : '解析仓库'}
+                      {inspecting ? (savedAnalyzer.harness ? '深度分析中…' : '解析中…') : '解析仓库'}
                     </Button>
+                  </div>
+                  <div className="ap-analyzer-hint">
+                    <span>当前解析：{savedAnalyzerLabel}{savedAnalyzer.harness ? '（深度模式）' : ''}</span>
+                    <button
+                      type="button"
+                      className="ap-link-btn"
+                      disabled={busy || inspecting}
+                      onClick={openSettingsPanel}
+                    >
+                      切换
+                    </button>
                   </div>
 
                   {evidence && (
                     <div className="ap-evidence">
-                      探测结果：默认分支 <code>{evidence.defaultBranch}</code>
-                      {evidence.latestRelease ? <> · 最新 Release <code>{evidence.latestRelease}</code></> : null}
-                      {!evidence.latestRelease && evidence.plugin?.version ? <> · 版本 <code>{formatVersion(evidence.plugin.version)}</code></> : null}
-                      {evidence.discoveredSkills?.length ? <> · 发现 {evidence.discoveredSkills.length} 个 Skills（{evidence.discoveredSkills.slice(0, 6).join(', ')}{evidence.discoveredSkills.length > 6 ? '…' : ''}）</> : null}
-                      {evidence.cliBin ? <> · CLI <code>{evidence.cliBin}</code></> : null}
-                      {evidence.npmPackage ? <> · npm 包 <code>{evidence.npmPackage}</code></> : null}
-                      {evidence.pythonPackage ? <> · Python 包 <code>{evidence.pythonPackage}</code></> : null}
-                      {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，声明 Hooks：{evidence.plugin.hookEvents.join('、')}（Claude Code / Codex 安装时注册）</> : '，未声明 Hooks'}</> : null}
+                      <div>
+                        探测结果：默认分支 <code>{evidence.defaultBranch}</code>
+                        {evidence.latestRelease ? <> · 最新 Release <code>{evidence.latestRelease}</code></> : null}
+                        {!evidence.latestRelease && evidence.plugin?.version ? <> · 版本 <code>{formatVersion(evidence.plugin.version)}</code></> : null}
+                        {evidence.discoveredSkills?.length ? <> · 发现 {evidence.discoveredSkills.length} 个 Skills（{evidence.discoveredSkills.slice(0, 6).join(', ')}{evidence.discoveredSkills.length > 6 ? '…' : ''}）</> : null}
+                        {evidence.cliBin ? <> · CLI <code>{evidence.cliBin}</code></> : null}
+                        {evidence.npmPackage ? <> · npm 包 <code>{evidence.npmPackage}</code></> : null}
+                        {evidence.pythonPackage ? <> · Python 包 <code>{evidence.pythonPackage}</code></> : null}
+                        {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，声明 Hooks：{evidence.plugin.hookEvents.join('、')}（Claude Code / Codex 安装时注册）</> : '，未声明 Hooks'}</> : null}
+                      </div>
+                      {evidence.ai && (
+                        <div className="ap-ai-evidence">
+                          <div className="ap-ai-head">
+                            <span className="ap-badge ap-badge-kind">
+                              深度分析 · {evidence.ai.harnessLabel}{evidence.ai.model ? ` (${evidence.ai.model})` : ''}
+                            </span>
+                            {evidence.ai.summary && <span>{evidence.ai.summary}</span>}
+                          </div>
+                          {evidence.ai.warnings?.length > 0 && (
+                            <ul className="ap-ai-warnings">
+                              {evidence.ai.warnings.map((item, idx) => (
+                                <li key={idx}>{item}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 

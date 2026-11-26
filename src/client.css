@@ -505,9 +505,58 @@
   display: flex;
   gap: 10px;
   align-items: end;
-  margin-bottom: 14px;
+  margin-bottom: 8px;
 }
 .ap-inspect-row > div { flex: 1; min-width: 0; }
+.ap-analyzer-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--ap-muted);
+}
+.ap-link-btn {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--ap-accent);
+  font: inherit;
+  cursor: pointer;
+}
+.ap-link-btn:hover:not(:disabled) { text-decoration: underline; }
+.ap-link-btn:disabled { opacity: 0.5; cursor: default; }
+.ap-settings-card {
+  margin: 12px 0 14px;
+  border-color: color-mix(in srgb, var(--ap-accent) 40%, transparent);
+}
+.ap-ai-evidence {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed color-mix(in srgb, var(--ap-accent) 30%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ap-ai-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  color: var(--ap-text);
+  overflow-wrap: anywhere;
+}
+.ap-ai-warnings {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--ap-warn);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  overflow-wrap: anywhere;
+}
 .ap-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ap-field label { font-size: 12px; font-weight: 500; color: var(--ap-muted); }
 /* 按面板实际宽度自动分列（DSH 设置页可能只有 500px 左右），同行输入框底部对齐 */

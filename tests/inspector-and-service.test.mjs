@@ -1017,3 +1017,193 @@ test('带全局 CLI 命令的安装器端到端：全局命令只跑一次、版
   assert.equal(failed.state.packages[0].harnessStatuses.codex.status, 'failed');
   assert.match(failed.state.packages[0].harnessStatuses.codex.lastError, /全局命令失败/);
 });
+
+test('全局解析配置持久化与三端可用模型探测（Codex / Claude Code / Antigravity）', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-analyzer-models-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const homeDir = join(base, 'home');
+  const codexDir = join(homeDir, '.codex');
+  const claudeDir = join(homeDir, '.claude');
+  await mkdir(codexDir, { recursive: true });
+  await mkdir(claudeDir, { recursive: true });
+
+  await writeFile(join(codexDir, 'config.toml'), 'model = "gpt-6.2-sol"\n');
+  await writeFile(join(codexDir, 'models_cache.json'), JSON.stringify({
+    models: [
+      { slug: 'gpt-6.2-sol', display_name: 'GPT-6.2-Sol', visibility: 'list' },
+      { slug: 'hidden-model', display_name: 'Hidden', visibility: 'hide' },
+      { slug: 'o4-mini', display_name: 'o4-mini', visibility: 'list' },
+    ],
+  }));
+  await writeFile(join(claudeDir, 'settings.json'), JSON.stringify({ model: 'claude-sonnet-custom' }));
+
+  const execImpl = async (file, args) => {
+    if (file === 'agy' && args[0] === 'models') {
+      return {
+        stdout: 'Fetching available models...\ngemini-4-neon-high\tGemini 4 Neon (High)\nclaude-sonnet-5-5-high\tClaude Sonnet 5.5 (High)\n',
+        stderr: '',
+      };
+    }
+    throw new Error(`unexpected exec ${file}`);
+  };
+
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome: join(homeDir, '.dsh'),
+    execImpl,
+  });
+  await service.init();
+
+  // 1. 探测三端模型
+  const codexModels = await service.action({ type: 'analyzer.models', harness: 'codex' });
+  assert.equal(codexModels.defaultModel, 'gpt-6.2-sol');
+  assert.deepEqual(codexModels.models.map(m => m.id), ['gpt-6.2-sol', 'o4-mini']);
+
+  const claudeModels = await service.action({ type: 'analyzer.models', harness: 'claude-code' });
+  assert.equal(claudeModels.defaultModel, 'claude-sonnet-custom');
+  assert.ok(claudeModels.models.some(m => m.id === 'claude-sonnet-custom'));
+  assert.ok(claudeModels.models.some(m => m.id === 'sonnet'));
+
+  const agyModels = await service.action({ type: 'analyzer.models', harness: 'antigravity' });
+  assert.deepEqual(agyModels.models, [
+    { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+    { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
+  ]);
+
+  // 2. 全局解析配置持久化，且后续保存包不会覆盖清空 settings
+  const savedSettings = await service.action({
+    type: 'settings.save',
+    analyzer: { harness: 'codex', model: 'gpt-6.2-sol' },
+  });
+  assert.deepEqual(savedSettings.state.settings, { analyzer: { harness: 'codex', model: 'gpt-6.2-sol' } });
+
+  await service.action({
+    type: 'package.save',
+    package: {
+      id: 'demo-pkg',
+      name: 'Demo',
+      kind: 'installer',
+      repo: 'https://github.com/acme/demo',
+      targets: ['codex'],
+      commands: { codex: { install: 'echo ok' } },
+    },
+  });
+  const stateAfterPkgSave = await service.state();
+  assert.deepEqual(stateAfterPkgSave.settings, { analyzer: { harness: 'codex', model: 'gpt-6.2-sol' } });
+
+  // 切换回静态规则后自动清空模型
+  const reset = await service.action({ type: 'settings.save', analyzer: { harness: '', model: 'gpt-6.2-sol' } });
+  assert.deepEqual(reset.state.settings, { analyzer: { harness: '', model: '' } });
+});
+
+test('深度仓库分析端到端：三端只读参数、临时克隆清理、结构化合并与 GitHub API 失败降级', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-deep-analyze-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const upstream = await createSampleSkillsRepo(base);
+  const homeDir = join(base, 'home');
+  const claudeConfigDir = join(homeDir, '.rec', 'claude', 'accounts', '8801', 'config');
+
+  const analysisPayload = {
+    kind: 'installer',
+    name: 'combo-tool',
+    description: 'Skills + MCP 组合工具',
+    version: '2.1.0',
+    npmPackage: '@acme/combo-tool',
+    targets: ['codex', 'claude-code', 'antigravity', 'dsh'],
+    skills: { include: [], mode: 'symlink' },
+    plugin: { name: '', marketplace: '', harnesses: [] },
+    mcp: { serverName: 'combo-tool', transport: 'stdio', command: '', args: [], url: '', envRefs: [] },
+    commands: {
+      shared: {
+        install: 'curl -fsSL https://example.com/install.sh | sh',
+        upgrade: 'combo upgrade {{version}}',
+        uninstall: 'combo uninstall --yes',
+        version: 'combo --version',
+      },
+      codex: { install: 'combo setup --target codex --yes', upgrade: '', uninstall: 'combo uninstall --target codex --yes --keep-cli' },
+      'claude-code': { install: 'combo setup --target claude --yes', upgrade: '', uninstall: 'combo uninstall --target claude --yes --keep-cli' },
+      antigravity: { install: 'combo setup --target antigravity --yes', upgrade: '', uninstall: 'combo uninstall --target antigravity --yes --keep-cli' },
+      dsh: { install: 'combo setup --target dsh --yes', upgrade: '', uninstall: 'combo uninstall --target dsh --yes --keep-cli' },
+    },
+    summary: '该仓库同时包含 CLI、MCP 服务与内置规则块，建议通过官方脚本安装并按端非交互接入。',
+    warnings: ['安装完成后需重开会话加载 MCP 工具'],
+  };
+
+  const spawnCalls = [];
+  const clonedDirs = [];
+  const execImpl = async (file, args, options) => {
+    if (file === 'git' && args[0] === 'clone') {
+      // 将远端仓库地址改写为本地临时仓库以实现完全离线测试
+      const dest = args[args.length - 1];
+      clonedDirs.push(dest);
+      return execFileAsync('git', ['clone', '--depth', '1', '--quiet', upstream, dest], options);
+    }
+    return execFileAsync(file, args, options);
+  };
+
+  const spawnImpl = async (file, args, options) => {
+    spawnCalls.push({ file, args, cwd: options.cwd, claudeConfigDir: options.env?.CLAUDE_CONFIG_DIR, input: options.input });
+    if (file === 'codex') {
+      const outIdx = args.indexOf('-o');
+      assert.ok(outIdx > 0, 'codex 应通过 -o 写入结构化结果');
+      await writeFile(args[outIdx + 1], JSON.stringify(analysisPayload), 'utf8');
+      return { stdout: '', stderr: '' };
+    }
+    if (file === 'reclaude') {
+      return { stdout: JSON.stringify({ type: 'result', structured_output: analysisPayload }), stderr: '' };
+    }
+    if (file === 'agy') {
+      return { stdout: JSON.stringify({ response: '```json\n' + JSON.stringify(analysisPayload) + '\n```' }), stderr: '' };
+    }
+    throw new Error(`unexpected spawn ${file}`);
+  };
+
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome: join(homeDir, '.dsh'),
+    claudeCommand: () => 'reclaude',
+    claudeConfigDir: () => claudeConfigDir,
+    // 故意让 GitHub API 返回 404，验证深度模式仍可直接基于克隆源码完成分析
+    fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '' }),
+    githubToken: '',
+    execImpl,
+    spawnImpl,
+  });
+  await service.init();
+
+  // 1. Codex 深度分析
+  await service.action({ type: 'settings.save', analyzer: { harness: 'codex', model: 'gpt-6.2-sol' } });
+  const codexRes = await service.action({ type: 'repo.inspect', repo: 'https://github.com/acme/combo-tool.git' });
+  assert.equal(codexRes.draft.kind, 'installer');
+  assert.equal(codexRes.draft.npmPackage, '@acme/combo-tool');
+  assert.equal(codexRes.draft.commands.shared.version, 'combo --version');
+  assert.equal(codexRes.draft.commands.dsh.install, 'combo setup --target dsh --yes');
+  assert.equal(codexRes.evidence.ai.harness, 'codex');
+  assert.equal(codexRes.evidence.ai.model, 'gpt-6.2-sol');
+  assert.match(codexRes.evidence.ai.summary, /CLI/);
+  assert.ok(codexRes.evidence.ai.warnings.some(w => w.includes('GitHub API 元信息获取失败')));
+  assert.ok(spawnCalls[0].args.includes('--sandbox') && spawnCalls[0].args.includes('read-only'));
+  assert.ok(spawnCalls[0].args.includes('-m') && spawnCalls[0].args.includes('gpt-6.2-sol'));
+  // 临时克隆目录应在分析后被自动清理
+  await assert.rejects(() => lstat(clonedDirs[0]));
+
+  // 2. Claude Code（reclaude）深度分析，验证只读工具白名单与 CLAUDE_CONFIG_DIR 透传
+  await service.action({ type: 'settings.save', analyzer: { harness: 'claude-code', model: 'sonnet' } });
+  const claudeRes = await service.action({ type: 'repo.inspect', repo: 'acme/combo-tool' });
+  assert.equal(claudeRes.evidence.ai.harness, 'claude-code');
+  assert.equal(spawnCalls[1].file, 'reclaude');
+  assert.equal(spawnCalls[1].claudeConfigDir, claudeConfigDir);
+  assert.ok(spawnCalls[1].args.includes('--permission-mode') && spawnCalls[1].args.includes('plan'));
+  assert.ok(spawnCalls[1].args.includes('--allowedTools') && spawnCalls[1].args.includes('Read,Glob,Grep'));
+  assert.ok(spawnCalls[1].args.includes('--model') && spawnCalls[1].args.includes('sonnet'));
+
+  // 3. Antigravity 深度分析，验证 --sandbox / --mode plan 与 fenced JSON 提取
+  await service.action({ type: 'settings.save', analyzer: { harness: 'antigravity', model: 'gemini-4-neon-high' } });
+  const agyRes = await service.action({ type: 'repo.inspect', repo: 'acme/combo-tool' });
+  assert.equal(agyRes.evidence.ai.harness, 'antigravity');
+  assert.equal(spawnCalls[2].file, 'agy');
+  assert.ok(spawnCalls[2].args.includes('--sandbox') && spawnCalls[2].args.includes('--mode') && spawnCalls[2].args.includes('plan'));
+  assert.ok(spawnCalls[2].args.includes('--model') && spawnCalls[2].args.includes('gemini-4-neon-high'));
+});

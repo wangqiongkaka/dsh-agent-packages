@@ -3,6 +3,7 @@ export const HEADER_KEY = 'x-agent-pkg-key';
 export const PLUGIN_ID = 'dsh-agent-packages';
 
 export const HARNESS_IDS = ['codex', 'claude-code', 'antigravity', 'dsh'];
+export const ANALYZER_HARNESS_IDS = ['codex', 'claude-code', 'antigravity'];
 export const PACKAGE_KINDS = ['skills-repo', 'plugin', 'mcp', 'installer'];
 
 export const KIND_LABELS = {
