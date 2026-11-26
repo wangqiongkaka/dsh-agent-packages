@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { ANALYZER_HARNESS_IDS, HARNESS_IDS, HARNESS_META, PACKAGE_KINDS } from './constants.mjs';
 import { buildUserEnv, defaultExecFile } from './installer.mjs';
-import { isPlainObject, slugifyId } from './store.mjs';
+import { isPlainObject, parseGitHubSlug, slugifyId } from './store.mjs';
 
 const HARNESS_CMD_SCHEMA = {
   type: 'object',
@@ -185,20 +185,23 @@ export function buildRepoAnalyzerPrompt({ repoUrl, baseInspection }) {
     '4. dsh（DSH 原生）：Skills 在 ~/.dsh/skills，无原生 MCP JSON 文件（MCP 通过 $DSH_HOME/cordis.patch.yml 注册），暂不支持原生 plugin。',
     '',
     '【4 种包类型选择规则】',
-    '- skills-repo：纯对外分发的 Skills 仓库（含对外 SKILL.md）。注意区分仓库开发者自用的 .claude/skills 等隐藏目录技能，不要把 CLI 工具自用技能误判为 skills-repo。',
-    '- plugin：标准插件市场仓库（含 .claude-plugin/、.codex-plugin/ 或 .agents/plugins/ 清单），安装/升级/卸载由各 Harness 插件命令接管，无需填 commands。',
+    '- skills-repo：纯对外分发的 Skills 仓库（含对外 SKILL.md，无额外安装步骤）。注意区分仓库开发者自用的 .claude/skills 等隐藏目录技能，不要把 CLI 工具自用技能误判为 skills-repo。',
+    '- plugin：标准插件市场仓库（含 .claude-plugin/、.codex-plugin/ 或 .agents/plugins/ 清单）。',
     '- mcp：纯标准 MCP Server（如直接 npx/uvx 启动 stdio 或连接 HTTP URL，无需额外安装器或规则块注入）。',
     '- installer：自带 CLI、多端安装器、脚本安装或 Skills + MCP + Hooks + 规则块组合型仓库。',
     '',
-    '【installer 命令编排规范】',
-    '- commands.shared 用于只需执行一次的全局 CLI 本体操作：install（安装 CLI，优先官方推荐方式）、upgrade（升级 CLI，可带 {{version}}）、uninstall（全部端卸载完成后彻底卸载 CLI）、version（检测本机 CLI 版本，如 `tool --version`）。',
-    '- commands.codex / commands["claude-code"] / commands.antigravity / commands.dsh 用于各端独立的接入/升级/卸载命令：',
-    '  - 所有命令必须是非交互式的（例如补充 --yes / -y / --target <id> 等真实存在的参数，请从源码核实确切参数名，不要编造不存在的选项）。',
-    '  - 如果 CLI 不支持按端拆分，将完整安装命令写入 commands.shared.install，各端命令留空字符串 "" 即可，避免重复执行多遍。',
-    '  - 分端卸载尽量只移除该端配置（如存在 --keep-cli 选项则加上），保留共用 CLI 给其他端；彻底卸载 CLI 放在 commands.shared.uninstall。',
-    '  - 可用模板变量：{{repo}}、{{ref}}、{{version}}、{{dir}}（用到 {{dir}} 时会自动检出仓库）。',
-    '- 对于不支持的端，不要放入 targets；无法自动化的前置步骤（如需要手动设置 API Key、重启会话或审核 Hooks）写入 warnings。',
-    '- 不使用的字段请留空字符串 "" 或空数组 []；summary 与 warnings 使用简洁中文说明判断依据与注意事项。',
+    '【安装 / 升级 / 卸载命令填充规范（非常重要）】',
+    '- 所有写入 commands 的命令必须是终端 shell 可直接执行的非交互命令，严禁写入 `/plugin`、`/mcp` 这类交互式斜杠命令！',
+    '- 可用模板变量：{{claude}}（自动替换为当前 Claude Code 命令，如 claude 或 reclaude，并自动透传 CLAUDE_CONFIG_DIR）、{{codex}}（当前 Codex 命令）、{{repo}}、{{ref}}、{{version}}、{{dir}}（任意 install/upgrade/uninstall 用到 {{dir}} 时会自动检出仓库）。',
+    '- 对于 installer 与 plugin 类型，都必须为每个支持端在 commands.<harness> 中填写明确可执行的 install、upgrade、uninstall 命令（不要留空），让用户可直接审阅与编辑：',
+    '  - 若仓库为 plugin，Claude Code 推荐用 `{{claude}} plugin marketplace add <owner/repo> && {{claude}} plugin install <name>@<market>`、升级用 `{{claude}} plugin marketplace update <market> && {{claude}} plugin update <name>@<market>`、卸载用 `{{claude}} plugin uninstall <name>@<market>`；',
+    '  - Codex 推荐用 `codex plugin marketplace add <owner/repo> && codex plugin add <name>@<market>`、升级用 `codex plugin marketplace upgrade <market> && codex plugin add <name>@<market>`、卸载用 `codex plugin remove <name>@<market>`；',
+    '  - Antigravity 推荐用 `agy plugin install <repoUrl>`、卸载用 `agy plugin uninstall <name>`；',
+    '  - 若仓库官方要求在安装或卸载前后执行额外清理/准备脚本（例如 `node scripts/uninstall.js`），请直接编排进对应命令并用 `{{dir}}` 引用仓库文件（例如 `node {{dir}}/scripts/uninstall.js && {{claude}} plugin uninstall ...`）。',
+    '- 对于 installer 类型，commands.shared 用于只需执行一次的全局 CLI 本体操作：install（安装 CLI，优先官方推荐方式）、upgrade（升级 CLI，可带 {{version}}）、uninstall（全部端卸载完成后彻底卸载 CLI）、version（检测本机 CLI 版本，如 `tool --version`）；各端独立接入/卸载写入 commands.<harness>（必须非交互，如 --yes / --target <id> / --keep-cli，请从源码核实真实参数，不要编造不存在的选项）。若 CLI 不支持按端拆分，将完整命令写入 commands.shared，各端命令留空字符串 "" 即可。',
+    '- 若某端没有原生插件机制但仓库提供了可用的替代安装命令（如 DSH 端通过 skills/脚本接入），可酌情写入该端命令或在 warnings 中说明取舍；确定不支持的端不要放入 targets。',
+    '- 只有纯 skills-repo 或纯 mcp 且确实无需任何额外命令时，commands 才全部留空；其余情况请完整填写。',
+    '- 无法自动化的前置步骤（如配置 API Key、新开会话、在 Codex `/hooks` 信任 Hooks 等）写入 warnings；不使用的字段留空字符串 "" 或空数组 []；summary 与 warnings 使用简洁中文。',
   ].filter(Boolean).join('\n');
 }
 
@@ -267,6 +270,38 @@ function cleanCommands(rawCommands) {
   return out;
 }
 
+function defaultPluginCommandsForHarness(harnessId, plugin, repoUrl) {
+  if (!plugin?.name) return null;
+  const name = plugin.name;
+  const market = plugin.marketplace || name;
+  const id = `${name}@${market}`;
+  const gh = parseGitHubSlug(repoUrl);
+  const source = gh ? gh.slug : repoUrl;
+  const fullUrl = gh ? gh.url : repoUrl;
+  if (harnessId === 'claude-code' && source) {
+    return {
+      install: `{{claude}} plugin marketplace add '${source}' && {{claude}} plugin install ${id}`,
+      upgrade: `{{claude}} plugin marketplace update ${market} && {{claude}} plugin update ${id}`,
+      uninstall: `{{claude}} plugin uninstall ${id}`,
+    };
+  }
+  if (harnessId === 'codex' && source) {
+    return {
+      install: `codex plugin marketplace add '${source}' && codex plugin add ${id}`,
+      upgrade: `codex plugin marketplace upgrade ${market} && codex plugin add ${id}`,
+      uninstall: `codex plugin remove ${id}`,
+    };
+  }
+  if (harnessId === 'antigravity' && fullUrl) {
+    return {
+      install: `agy plugin install '${fullUrl}'`,
+      upgrade: `agy plugin uninstall ${name} && agy plugin install '${fullUrl}'`,
+      uninstall: `agy plugin uninstall ${name}`,
+    };
+  }
+  return null;
+}
+
 export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl, harness, model }) {
   const baseDraft = baseInspection?.draft ?? {};
   const baseEvidence = baseInspection?.evidence ?? {};
@@ -316,7 +351,21 @@ export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl,
     overrides: baseDraft.mcp?.overrides ?? {},
   };
 
-  const commands = kind === 'plugin' ? {} : cleanCommands(analysis.commands);
+  const commands = cleanCommands(analysis.commands);
+  // 深度分析判定为 plugin 时，保留模型给出的定制命令；若某目标端未填充具体命令，则自动补全可读可编辑的标准插件命令模板
+  if (kind === 'plugin' && plugin) {
+    const resolvedRepo = baseDraft.repo || repoUrl;
+    for (const harnessId of targets) {
+      const defaults = defaultPluginCommandsForHarness(harnessId, plugin, resolvedRepo);
+      if (!defaults) continue;
+      const existing = commands[harnessId] ?? {};
+      commands[harnessId] = {
+        install: existing.install || defaults.install,
+        upgrade: existing.upgrade || defaults.upgrade,
+        uninstall: existing.uninstall || defaults.uninstall,
+      };
+    }
+  }
 
   const summary = typeof analysis.summary === 'string' ? analysis.summary.trim() : '';
   const warnings = Array.isArray(analysis.warnings)
@@ -330,7 +379,7 @@ export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl,
       kind,
       repo: baseDraft.repo || repoUrl,
       description,
-      ref: baseDraft.ref || (version ? `v${version.replace(/^v/, '')}` : baseEvidence.defaultBranch || 'main'),
+      ref: baseDraft.ref || baseEvidence.defaultBranch || '',
       version,
       npmPackage,
       targets,

@@ -562,8 +562,6 @@ export function PackagesPage() {
         name: editingOriginalId || nameTouched ? prev.name : nextDraft.name,
       }));
       setEvidence(result.evidence);
-      // 解析出的自定义命令会覆盖内置安装方式，展开让用户看到
-      if (nextDraft.kind !== 'installer' && Object.keys(nextDraft.commands).length > 0) setShowAdvanced(true);
       setNotice(result.message);
     } catch (cause) {
       setError(cause.message);
@@ -594,7 +592,7 @@ export function PackagesPage() {
     setEditingOriginalId(pkg.id);
     setDraft(packageToDraft(pkg));
     setEvidence(null);
-    setShowAdvanced(pkg.kind !== 'installer' && Object.keys(pkg.commands || {}).length > 0);
+    setShowAdvanced(false);
     setEditorOpen(true);
     setTab('packages');
   }
@@ -639,7 +637,15 @@ export function PackagesPage() {
     );
   }
 
-  // 自定义安装器必填，放在主区；其他类型放进「高级设置」，填写后覆盖内置安装方式
+  // 安装器或已解析/填写自定义命令时直接在主区展示，避免折叠在高级设置里被忽略
+  const hasFilledCommands = Boolean(
+    draft.commands.shared?.install ||
+    draft.commands.shared?.upgrade ||
+    draft.commands.shared?.uninstall ||
+    draft.commands.shared?.version ||
+    HARNESS_IDS.some(h => draft.commands[h]?.install || draft.commands[h]?.upgrade || draft.commands[h]?.uninstall)
+  );
+  const showCommandsInMain = draft.kind === 'installer' || hasFilledCommands;
   const showSharedCommands = draft.kind === 'installer' || Boolean(
     draft.commands.shared?.install ||
     draft.commands.shared?.upgrade ||
@@ -649,7 +655,7 @@ export function PackagesPage() {
   const commandFields = (
     <>
       <p className="ap-help">
-        {draft.kind === 'installer' ? '全局命令每次操作只执行一次；勾选端后将依次执行对应端命令。' : '填写后覆盖内置安装方式。'}可用变量 <code>{'{{repo}}'}</code> <code>{'{{ref}}'}</code> <code>{'{{version}}'}</code> <code>{'{{dir}}'}</code>（用到 <code>{'{{dir}}'}</code> 时先检出仓库）
+        {draft.kind === 'installer' ? '全局命令每次操作只执行一次；勾选端后将依次执行对应端命令。' : '填写后覆盖内置安装方式；清空则回落到内置适配器。'}可用变量 <code>{'{{claude}}'}</code> <code>{'{{repo}}'}</code> <code>{'{{ref}}'}</code> <code>{'{{version}}'}</code> <code>{'{{dir}}'}</code>（用到 <code>{'{{dir}}'}</code> 时自动检出仓库）
       </p>
       {showSharedCommands && (
         <div className="ap-cmd-card">
@@ -1271,9 +1277,9 @@ export function PackagesPage() {
                     </div>
                   )}
 
-                  {draft.kind === 'installer' && (
+                  {showCommandsInMain && (
                     <div className="ap-section">
-                      <h4>安装命令</h4>
+                      <h4>{draft.kind === 'installer' ? '安装命令' : '安装 / 升级 / 卸载命令'}</h4>
                       {commandFields}
                     </div>
                   )}
@@ -1341,7 +1347,7 @@ export function PackagesPage() {
                         onChange={e => setDraft(prev => ({ ...prev, description: e.target.value }))}
                       />
                     </div>
-                    {draft.kind !== 'installer' && (
+                    {!showCommandsInMain && (
                       <>
                         <h4>自定义命令</h4>
                         {commandFields}

@@ -113,7 +113,7 @@ function summarizeOutput(stdout, stderr) {
   return combined.slice(0, 2000) + '\n…（输出已截断）';
 }
 
-function templateVars(pkg, harnessId, repoDir) {
+function templateVars(pkg, harnessId, repoDir, harnessPaths = {}) {
   return {
     id: pkg.id,
     name: pkg.name,
@@ -123,6 +123,8 @@ function templateVars(pkg, harnessId, repoDir) {
     npmPackage: pkg.npmPackage || '',
     harness: harnessId,
     dir: repoDir || '',
+    claude: shellWord(harnessPaths?.['claude-code']?.command || 'claude'),
+    codex: shellWord(harnessPaths?.codex?.command || 'codex'),
   };
 }
 
@@ -363,7 +365,7 @@ async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, option
 }
 
 async function runCustomCommand(pkg, harnessId, action, commandTemplate, repoDir, options) {
-  const vars = templateVars(pkg, harnessId, repoDir);
+  const vars = templateVars(pkg, harnessId, repoDir, options.harnessPaths);
   const rendered = interpolateTemplate(commandTemplate, vars).trim();
   if (!rendered) {
     return {
@@ -481,6 +483,30 @@ export async function applyPackageAction({
     const remainingInstalled = Object.entries(nextLock.harnesses)
       .some(([h, entry]) => !toUninstall.includes(h) && entry?.status === 'installed');
 
+    // 卸载命令包含 {{dir}}（如官方清理脚本 node {{dir}}/scripts/uninstall.js）时，先确保仓库已检出
+    let uninstallRepoSynced = false;
+    const uninstallNeedsRepo = Boolean(pkg.repo) && (
+      (sharedUninstall && !remainingInstalled && sharedUninstall.includes('{{dir}}')) ||
+      toUninstall.some(h => (pkg.commands?.[h]?.uninstall || '').includes('{{dir}}'))
+    );
+    if (uninstallNeedsRepo) {
+      try {
+        const gitResult = await syncGitRepo(pkg.repo, repoDir, pkg.ref, { execImpl, dryRun });
+        uninstallRepoSynced = !dryRun;
+        steps.push({
+          harness: 'repo',
+          action: 'git-sync',
+          method: 'git',
+          status: dryRun ? 'preview' : 'ok',
+          detail: dryRun ? gitResult.action : `已检出 ${pkg.ref || '默认分支'}（${gitResult.commit.slice(0, 7)}）`,
+          warnings: [],
+        });
+      } catch (error) {
+        steps.push({ harness: 'repo', action: 'git-sync', method: 'git', status: 'error', detail: `拉取仓库失败：${error.message}`, warnings: [] });
+        return { steps, lockEntry: nextLock };
+      }
+    }
+
     for (const harnessId of toUninstall) {
       const prev = nextLock.harnesses[harnessId] ?? {};
       const customUninstall = pkg.commands?.[harnessId]?.uninstall;
@@ -491,7 +517,8 @@ export async function applyPackageAction({
             dryRun,
             runShell,
             rootDir,
-            repoSynced: false,
+            repoSynced: uninstallRepoSynced,
+            harnessPaths,
             ...envOverrides,
           });
         } else if (pkg.kind === 'plugin') {
@@ -574,7 +601,8 @@ export async function applyPackageAction({
           dryRun,
           runShell,
           rootDir,
-          repoSynced: false,
+          repoSynced: uninstallRepoSynced,
+          harnessPaths,
         });
         steps.push(sharedStep);
       } catch (error) {
@@ -631,6 +659,7 @@ export async function applyPackageAction({
         runShell,
         rootDir,
         repoSynced,
+        harnessPaths,
       });
       steps.push(sharedStep);
     } catch (error) {
@@ -651,7 +680,7 @@ export async function applyPackageAction({
     const customCmd = action === 'upgrade'
       ? (pkg.commands?.[harnessId]?.upgrade || pkg.commands?.[harnessId]?.install)
       : pkg.commands?.[harnessId]?.install;
-    const vars = templateVars(pkg, harnessId, repoDir);
+    const vars = templateVars(pkg, harnessId, repoDir, harnessPaths);
 
     try {
       let step = pkg.kind === 'plugin' && action === 'install'
@@ -665,8 +694,13 @@ export async function applyPackageAction({
           runShell,
           rootDir,
           repoSynced,
+          harnessPaths,
           ...envOverrides,
         });
+        if (!dryRun && pkg.kind === 'plugin' && step.status === 'ok') {
+          const match = findInstalledPlugin(await readInstalledPlugins(harnessPaths), pkg, harnessId);
+          if (match?.version) step.installedVersion = match.version;
+        }
       } else if (pkg.kind === 'plugin') {
         step = await applyPluginToHarness(pkg, harnessId, action, harnessPaths, { dryRun, runShell, rootDir });
       } else if (pkg.kind === 'skills-repo') {

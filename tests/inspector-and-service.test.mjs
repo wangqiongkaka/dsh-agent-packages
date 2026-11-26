@@ -1207,3 +1207,132 @@ test('深度仓库分析端到端：三端只读参数、临时克隆清理、�
   assert.ok(spawnCalls[2].args.includes('--sandbox') && spawnCalls[2].args.includes('--mode') && spawnCalls[2].args.includes('plan'));
   assert.ok(spawnCalls[2].args.includes('--model') && spawnCalls[2].args.includes('gemini-4-neon-high'));
 });
+
+test('深度分析 plugin（如 ponytail）：保留定制卸载清理命令、空命令自动补全、{{claude}} 插值与卸载期 {{dir}} 自动检出', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-deep-plugin-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const upstream = await createSampleSkillsRepo(base);
+  const homeDir = join(base, 'home');
+  const claudeConfigDir = join(homeDir, '.rec', 'claude', 'accounts', '9001', 'config');
+  const claudePlugins = join(claudeConfigDir, 'plugins');
+  await mkdir(claudePlugins, { recursive: true });
+  await writeFile(join(claudePlugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }));
+  await writeFile(join(claudePlugins, 'known_marketplaces.json'), '{}');
+
+  let returnEmptyCommands = false;
+  const execImpl = async (file, args, options) => {
+    if (file === 'git' && args[0] === 'clone') {
+      const dest = args[args.length - 1];
+      const isShallow = args.includes('--depth');
+      return execFileAsync('git', isShallow ? ['clone', '--depth', '1', '--quiet', upstream, dest] : ['clone', '--quiet', upstream, dest], options);
+    }
+    return execFileAsync(file, args, options);
+  };
+  const spawnImpl = async () => ({
+    stdout: JSON.stringify({
+      type: 'result',
+      structured_output: {
+        kind: 'plugin',
+        name: 'ponytail',
+        description: 'Lazy senior dev plugin',
+        version: '5.3.3',
+        npmPackage: '',
+        targets: ['codex', 'claude-code', 'antigravity'],
+        skills: { include: [], mode: 'symlink' },
+        plugin: { name: 'ponytail', marketplace: 'ponytail', harnesses: ['codex', 'claude-code', 'antigravity'] },
+        mcp: { serverName: 'ponytail', transport: 'stdio', command: '', args: [], url: '', envRefs: [] },
+        commands: returnEmptyCommands
+          ? {
+              shared: { install: '', upgrade: '', uninstall: '', version: '' },
+              codex: { install: '', upgrade: '', uninstall: '' },
+              'claude-code': { install: '', upgrade: '', uninstall: '' },
+              antigravity: { install: '', upgrade: '', uninstall: '' },
+              dsh: { install: '', upgrade: '', uninstall: '' },
+            }
+          : {
+              shared: { install: '', upgrade: '', uninstall: '', version: '' },
+              codex: {
+                install: "codex plugin marketplace add 'DietrichGebert/ponytail' && codex plugin add ponytail@ponytail",
+                upgrade: 'codex plugin marketplace upgrade ponytail && codex plugin add ponytail@ponytail',
+                uninstall: 'node {{dir}}/scripts/uninstall.js && codex plugin remove ponytail@ponytail',
+              },
+              'claude-code': {
+                install: "{{claude}} plugin marketplace add 'DietrichGebert/ponytail' && {{claude}} plugin install ponytail@ponytail",
+                upgrade: '{{claude}} plugin marketplace update ponytail && {{claude}} plugin update ponytail@ponytail',
+                uninstall: 'node {{dir}}/scripts/uninstall.js && {{claude}} plugin uninstall ponytail@ponytail',
+              },
+              antigravity: {
+                install: "agy plugin install 'https://github.com/DietrichGebert/ponytail'",
+                upgrade: '',
+                uninstall: 'agy plugin uninstall ponytail',
+              },
+              dsh: { install: '', upgrade: '', uninstall: '' },
+            },
+        summary: '标准插件市场仓库，卸载前需执行 scripts/uninstall.js 清理状态文件。',
+        warnings: ['Codex 需在 /hooks 信任插件 Hook'],
+      },
+    }),
+    stderr: '',
+  });
+
+  const executed = [];
+  const runShell = async (command, options) => {
+    executed.push({ command, claudeConfigDir: options?.env?.CLAUDE_CONFIG_DIR });
+    if (command.includes('reclaude plugin install ponytail@ponytail')) {
+      await writeFile(join(claudePlugins, 'installed_plugins.json'), JSON.stringify({
+        version: 2,
+        plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '5.3.3' }] },
+      }));
+    }
+    return { stdout: 'ok', stderr: '' };
+  };
+
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome: join(homeDir, '.dsh'),
+    claudeCommand: () => 'reclaude',
+    claudeConfigDir: () => claudeConfigDir,
+    fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '' }),
+    githubToken: '',
+    execImpl,
+    spawnImpl,
+    runShell,
+  });
+  await service.init();
+  await service.action({ type: 'settings.save', analyzer: { harness: 'claude-code', model: 'opus' } });
+
+  // 1. 模型返回定制卸载脚本时，完整保留并补全缺失的 antigravity upgrade
+  const customRes = await service.action({ type: 'repo.inspect', repo: 'https://github.com/DietrichGebert/ponytail' });
+  assert.equal(customRes.draft.kind, 'plugin');
+  assert.equal(customRes.draft.commands['claude-code'].uninstall, 'node {{dir}}/scripts/uninstall.js && {{claude}} plugin uninstall ponytail@ponytail');
+  assert.equal(customRes.draft.commands.antigravity.upgrade, "agy plugin uninstall ponytail && agy plugin install 'https://github.com/DietrichGebert/ponytail'");
+
+  // 2. 即使模型返回空 commands，也自动补全 3 端可执行命令模板
+  returnEmptyCommands = true;
+  const fallbackRes = await service.action({ type: 'repo.inspect', repo: 'https://github.com/DietrichGebert/ponytail' });
+  assert.equal(fallbackRes.draft.commands['claude-code'].install, "{{claude}} plugin marketplace add 'DietrichGebert/ponytail' && {{claude}} plugin install ponytail@ponytail");
+  assert.equal(fallbackRes.draft.commands.codex.uninstall, 'codex plugin remove ponytail@ponytail');
+  assert.equal(fallbackRes.draft.commands.antigravity.install, "agy plugin install 'https://github.com/DietrichGebert/ponytail'");
+
+  // 3. 保存并安装 claude-code：{{claude}} 自动插值为 reclaude，透传 CLAUDE_CONFIG_DIR 并读回版本 5.3.3
+  const saved = await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: { ...customRes.draft, targets: ['claude-code'] },
+  });
+  assert.deepEqual(executed, [{
+    command: "reclaude plugin marketplace add 'DietrichGebert/ponytail' && reclaude plugin install ponytail@ponytail",
+    claudeConfigDir,
+  }]);
+  assert.equal(saved.state.packages[0].harnessStatuses['claude-code'].installedVersion, '5.3.3');
+
+  // 4. 卸载：命令含 {{dir}}，即使此前未克隆过 repos/ponytail 也会自动检出再执行卸载清理命令
+  executed.length = 0;
+  const uninstalled = await service.action({ type: 'package.uninstall', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.equal(uninstalled.steps[0].harness, 'repo');
+  assert.equal(uninstalled.steps[0].action, 'git-sync');
+  assert.equal(executed.length, 1);
+  assert.match(executed[0].command, /^node .+repos\/ponytail\/scripts\/uninstall\.js && reclaude plugin uninstall ponytail@ponytail$/);
+  assert.equal(executed[0].claudeConfigDir, claudeConfigDir);
+});

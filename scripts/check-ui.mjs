@@ -353,6 +353,7 @@ try {
   await page.locator('.ap-ai-evidence').waitFor();
   assert.match(await page.locator('.ap-ai-evidence').innerText(), /深度分析 · Codex \(gpt-6\.2-sol\)/);
   assert.match(await page.locator('.ap-ai-evidence').innerText(), /首次接入后请重启对应 Harness 会话/);
+  assert.equal(await page.locator('#ap-cmd-install-codex').inputValue(), 'codegraph install --target codex --yes');
   await page.screenshot({ path: 'artifacts/packages-ai-analysis.png', fullPage: true });
   await page.getByRole('button', { name: '收起' }).click();
 
