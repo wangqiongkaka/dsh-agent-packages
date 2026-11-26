@@ -2,7 +2,7 @@ import { lstat, readdir, readFile, readlink, stat } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { HARNESS_IDS } from './constants.mjs';
 import { readCodexMcpServers, readJsonMcpServers } from './config-editors.mjs';
-import { normalizeRepoUrl, slugifyId } from './store.mjs';
+import { normalizeRepoUrl } from './store.mjs';
 
 async function scanSkillsDirectory(dirPath) {
   let entries;
@@ -151,13 +151,10 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
     }
   }
   const installedPlugins = await readInstalledPlugins(harnessPaths);
-  const unmanagedPluginGroups = new Map();
 
   const agentsSkillLock = await readAgentsSkillLock(harnessPaths.agentsSkillLockFile);
   const warnings = [];
   const harnesses = {};
-  const unmanagedMcpGroups = new Map();
-  const unmanagedSkillRepos = new Map();
 
   for (const harnessId of HARNESS_IDS) {
     const paths = harnessPaths[harnessId];
@@ -168,17 +165,6 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       const sourceRepo = lockMeta?.source ? normalizeRepoUrl(lockMeta.source) : '';
       if (item.broken) {
         warnings.push({ harness: harnessId, kind: 'broken-symlink', message: `失效软链接：${item.path} -> ${item.linkTarget}` });
-      }
-      if (!managedBy && sourceRepo) {
-        const key = sourceRepo;
-        const group = unmanagedSkillRepos.get(key) ?? {
-          repo: sourceRepo,
-          skills: new Set(),
-          harnesses: new Set(),
-        };
-        group.skills.add(item.name);
-        group.harnesses.add(harnessId);
-        unmanagedSkillRepos.set(key, group);
       }
       return { ...item, managedBy, sourceRepo };
     });
@@ -198,15 +184,6 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
 
     const mcpList = Object.entries(mcpServers).map(([serverName, cfg]) => {
       const managedBy = managedMcpKeys.get(`${harnessId}:${serverName}`) || null;
-      if (!managedBy) {
-        const group = unmanagedMcpGroups.get(serverName) ?? {
-          serverName,
-          harnesses: new Set(),
-          sampleConfig: cfg,
-        };
-        group.harnesses.add(harnessId);
-        unmanagedMcpGroups.set(serverName, group);
-      }
       return {
         serverName,
         transport: cfg?.url ? 'http' : 'stdio',
@@ -232,13 +209,6 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
 
     const pluginList = (installedPlugins[harnessId]?.plugins ?? []).map(plugin => {
       const managedBy = managedPlugins.get(`${harnessId}:${plugin.name}@${plugin.marketplace}`) || null;
-      if (!managedBy && plugin.repo) {
-        const key = `${plugin.repo}#${plugin.name}`;
-        const group = unmanagedPluginGroups.get(key) ?? { ...plugin, harnesses: new Set() };
-        if (!group.marketplace) group.marketplace = plugin.marketplace;
-        group.harnesses.add(harnessId);
-        unmanagedPluginGroups.set(key, group);
-      }
       return { ...plugin, managedBy };
     }).sort((a, b) => a.name.localeCompare(b.name));
 
@@ -280,88 +250,9 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
     } catch { /* ignore legacy parse errors */ }
   }
 
-  // 生成可一键导入的未纳管建议
-  const importCandidates = [];
-  for (const group of unmanagedSkillRepos.values()) {
-    const repoName = group.repo.split('/').pop() || 'skills';
-    importCandidates.push({
-      candidateId: `skills:${group.repo}`,
-      kind: 'skills-repo',
-      label: `${repoName}（${group.skills.size} 个 Skills）`,
-      harnesses: [...group.harnesses],
-      draft: {
-        id: slugifyId(repoName),
-        name: repoName,
-        kind: 'skills-repo',
-        repo: group.repo,
-        description: `从本机扫描导入，包含 ${group.skills.size} 个 Skills`,
-        ref: '',
-        version: '',
-        targets: [...group.harnesses],
-        skills: { include: [...group.skills].sort(), mode: 'symlink' },
-      },
-    });
-  }
-
-  for (const group of unmanagedPluginGroups.values()) {
-    const id = slugifyId(group.name);
-    importCandidates.push({
-      candidateId: `plugin:${group.repo}#${group.name}`,
-      kind: 'plugin',
-      label: `${group.name}（插件${group.version ? ` ${group.version}` : ''}）`,
-      harnesses: [...group.harnesses],
-      draft: {
-        id,
-        name: group.name,
-        kind: 'plugin',
-        repo: group.repo,
-        description: '从本机已安装插件导入，安装与卸载交由各 Harness 插件命令处理（含 Hooks）',
-        ref: '',
-        version: group.version,
-        targets: [...group.harnesses],
-        plugin: { name: group.name, marketplace: group.marketplace || id },
-      },
-    });
-  }
-
-  for (const group of unmanagedMcpGroups.values()) {
-    const cfg = group.sampleConfig || {};
-    const transport = cfg.url ? 'http' : 'stdio';
-    const envRefs = Array.isArray(cfg.env_vars)
-      ? cfg.env_vars
-      : (cfg.env && typeof cfg.env === 'object' ? Object.keys(cfg.env) : []);
-    importCandidates.push({
-      candidateId: `mcp:${group.serverName}`,
-      kind: 'mcp',
-      label: `${group.serverName}（${transport.toUpperCase()} MCP）`,
-      harnesses: [...group.harnesses],
-      draft: {
-        id: slugifyId(group.serverName),
-        name: group.serverName,
-        kind: 'mcp',
-        repo: '',
-        description: '从本机现有 MCP 配置导入，可补充 GitHub 地址以启用版本检查',
-        ref: '',
-        version: '',
-        targets: [...group.harnesses],
-        mcp: {
-          serverName: group.serverName,
-          transport,
-          command: cfg.command || '',
-          args: Array.isArray(cfg.args) ? cfg.args : [],
-          url: cfg.url || '',
-          envRefs,
-          headers: {},
-          overrides: {},
-        },
-      },
-    });
-  }
-
   return {
     scannedAt: new Date().toISOString(),
     harnesses,
     warnings,
-    importCandidates,
   };
 }

@@ -182,14 +182,12 @@ try {
   await page.getByRole('button', { name: '升级', exact: true }).click();
   await page.getByText('当前：0.0.29').waitFor();
 
-  // 3. 切换本机扫描与诊断，验证告警和一键导入
+  // 3. 切换本机扫描与诊断，验证只读告警；本机导入已移除
   await page.getByRole('tab', { name: '本机扫描与诊断' }).click();
   await page.getByText(/检测到旧版目录/).waitFor();
-  await page.getByText('codegraph（STDIO MCP）').waitFor();
+  await page.getByText('codegraph').waitFor();
+  assert.equal(await page.getByRole('button', { name: '导入清单' }).count(), 0);
   await page.screenshot({ path: 'artifacts/packages-doctor.png', fullPage: true });
-
-  await page.getByRole('button', { name: '导入清单' }).click();
-  await page.getByText(/已导入「codegraph」/).waitFor();
 
   // 4. 窄屏移动端检查无横向溢出
   await page.setViewportSize({ width: 390, height: 844 });

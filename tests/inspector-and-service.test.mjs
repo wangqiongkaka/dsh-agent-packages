@@ -139,7 +139,7 @@ test('Skills 仓库端到端：安装、保护非受管目录、版本升级清�
   assert.equal(await readFile(join(unmanagedAlpha, 'KEEP.txt'), 'utf8'), 'user-owned');
 });
 
-test('MCP 包与自定义安装器端到端：安装、检查更新、升级与本机扫描导入', async t => {
+test('MCP 包与自定义安装器端到端：安装、检查更新、升级与本机只读诊断', async t => {
   const base = await mkdtemp(join(tmpdir(), 'ap-e2e-mcp-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const homeDir = join(base, 'home');
@@ -238,14 +238,19 @@ test('MCP 包与自定义安装器端到端：安装、检查更新、升级与�
   });
   assert.deepEqual(executedCommands, ['echo install-codex-1.0.0', 'echo install-claude-1.0.0']);
 
-  // 4. 本机只读扫描与导入未纳管 MCP
+  // 4. 本机只读诊断；已移除本机导入，包只能通过添加进入清单
   const scan = await service.action({ type: 'local.scan' });
   assert.ok(scan.report.warnings.some(w => w.kind === 'legacy-dir'));
   assert.ok(scan.report.warnings.some(w => w.kind === 'broken-symlink'));
-  const existingCandidate = scan.report.importCandidates.find(c => c.candidateId === 'mcp:existing_tool');
-  assert.ok(existingCandidate);
-  const imported = await service.action({ type: 'local.import', draft: existingCandidate.draft });
-  assert.equal(imported.package.id, 'existing_tool');
+  assert.equal(scan.report.harnesses.codex.mcpServers.find(m => m.serverName === 'existing_tool').managedBy, null);
+  assert.equal(scan.report.importCandidates, undefined);
+  await assert.rejects(service.action({ type: 'local.import', draft: {} }), { status: 400 });
+
+  // 5. MCP 不支持 DSH 原生：前置检查直接拒绝保存
+  await assert.rejects(
+    service.action({ type: 'package.save', package: { name: 'Playwright MCP', kind: 'mcp', repo: 'https://github.com/microsoft/playwright-mcp', targets: ['dsh'] } }),
+    { status: 400, message: /前置检查未通过：DSH 原生没有可写入的 MCP 配置文件/ },
+  );
 });
 
 test('HTTP API 强制校验会话令牌并拒绝未授权 POST', async t => {
@@ -312,14 +317,14 @@ test('插件仓库（如 ponytail）识别为 plugin 类型，提取插件名、
     },
   });
   assert.equal(draft.kind, 'plugin');
-  assert.deepEqual(draft.plugin, { name: 'ponytail', marketplace: 'ponytail' });
+  assert.deepEqual(draft.plugin, { name: 'ponytail', marketplace: 'ponytail', harnesses: ['codex', 'claude-code', 'antigravity'] });
   assert.deepEqual(draft.targets, ['codex', 'claude-code', 'antigravity']);
   assert.deepEqual(draft.commands, {}, 'README 中不完整的单行命令不能覆盖插件适配器');
   assert.equal(draft.version, '5.3.3');
   assert.deepEqual(evidence.plugin.hookEvents, ['SessionStart', 'UserPromptSubmit']);
 });
 
-test('插件端到端：调用各端插件命令安装、读回版本、扫描纳管/导入与卸载', async t => {
+test('插件端到端：添加时重命名与前置检查、幂等安装、读回版本与卸载', async t => {
   const base = await mkdtemp(join(tmpdir(), 'ap-plugin-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const homeDir = join(base, 'home');
@@ -334,7 +339,7 @@ test('插件端到端：调用各端插件命令安装、读回版本、扫描�
     'other-market': { source: { source: 'github', repo: 'acme/other' } },
   }));
 
-  // 模拟 Harness CLI：执行后写入各端自己的插件记录，供读回版本与扫描
+  // 模拟 Harness CLI：执行后写入各端自己的插件记录，供读回版本、幂等判断与扫描
   const executed = [];
   const runShell = async command => {
     executed.push(command);
@@ -346,59 +351,89 @@ test('插件端到端：调用各端插件命令安装、读回版本、扫描�
       known.ponytail = { source: { source: 'github', repo: 'DietrichGebert/ponytail' } };
       await writeFile(join(claudePlugins, 'known_marketplaces.json'), JSON.stringify(known));
     }
+    if (command.includes('codex plugin add ponytail@ponytail')) {
+      await mkdir(join(homeDir, '.codex'), { recursive: true });
+      await writeFile(join(homeDir, '.codex', 'config.toml'), '[marketplaces.ponytail]\nsource = "https://github.com/DietrichGebert/ponytail"\n\n[plugins."ponytail@ponytail"]\nenabled = true\n');
+    }
+    if (command.startsWith('agy plugin install')) {
+      await mkdir(join(homeDir, '.gemini', 'config', 'plugins', 'ponytail'), { recursive: true });
+    }
     return { stdout: 'ok', stderr: '' };
   };
   const service = new PackageManagerService({ root: join(base, 'root'), homeDir, dshHome: join(homeDir, '.dsh'), claudeConfigDir, runShell });
   await service.init();
 
-  const saved = await service.action({
-    type: 'package.save',
-    installNow: true,
-    package: {
-      id: 'ponytail',
-      kind: 'plugin',
-      repo: 'https://github.com/DietrichGebert/ponytail',
-      ref: 'v5.3.3',
-      version: '5.3.3',
-      targets: ['codex', 'claude-code', 'antigravity', 'dsh'],
-      plugin: { name: 'ponytail', marketplace: 'ponytail' },
-    },
-  });
+  // 解析仓库得到的草稿：包 ID 留空，名称改成自定义名称
+  const ponytail = {
+    name: 'Lazy Dev',
+    kind: 'plugin',
+    repo: 'https://github.com/DietrichGebert/ponytail',
+    ref: 'v5.3.3',
+    version: '5.3.3',
+    targets: ['codex', 'claude-code', 'antigravity'],
+    plugin: { name: 'ponytail', marketplace: 'ponytail', harnesses: ['codex', 'claude-code', 'antigravity'] },
+  };
+
+  // 前置检查：DSH 无插件机制、仓库没有该端插件清单时拒绝保存，不写清单
+  await assert.rejects(
+    service.action({ type: 'package.save', installNow: true, package: { ...ponytail, targets: [...ponytail.targets, 'dsh'] } }),
+    { status: 400, message: /前置检查未通过：DSH 原生暂无插件机制/ },
+  );
+  await assert.rejects(
+    service.action({ type: 'package.save', package: { ...ponytail, plugin: { ...ponytail.plugin, harnesses: ['claude-code'] } } }),
+    { status: 400, message: /Codex仓库没有该端可用的插件清单/ },
+  );
+  assert.deepEqual(executed, []);
+  assert.equal((await service.state()).packages.length, 0);
+
+  const saved = await service.action({ type: 'package.save', installNow: true, package: ponytail });
+  assert.equal(saved.package.id, 'lazy-dev', '包 ID 留空时按重命名后的名称生成');
   assert.deepEqual(executed, [
     "codex plugin marketplace add 'DietrichGebert/ponytail' && codex plugin add ponytail@ponytail",
     "claude plugin marketplace add 'DietrichGebert/ponytail' && claude plugin install ponytail@ponytail",
     "agy plugin install 'https://github.com/DietrichGebert/ponytail'",
-  ]);
-  const dshStep = saved.steps.find(step => step.harness === 'dsh');
-  assert.equal(dshStep.status, 'skipped');
+  ], '重命名不影响各端插件标识');
   assert.ok(saved.steps.find(step => step.harness === 'codex').warnings.some(w => w.includes('/hooks')));
   const statuses = saved.state.packages[0].harnessStatuses;
   assert.equal(statuses['claude-code'].status, 'installed');
   assert.equal(statuses['claude-code'].installedVersion, '5.3.3');
-  assert.equal(statuses.dsh.status, 'not-installed');
+  assert.equal(statuses.dsh.status, 'unselected');
+
+  // 幂等：同一插件换个名称再次添加，只更新原条目（可重命名），已装各端不重复执行任何命令
+  executed.length = 0;
+  const again = await service.action({ type: 'package.save', installNow: true, package: { ...ponytail, name: 'Ponytail' } });
+  assert.deepEqual(executed, []);
+  assert.match(again.message, /已在清单中/);
+  assert.deepEqual(again.state.packages.map(p => [p.id, p.name]), [['lazy-dev', 'Ponytail']]);
+  assert.ok(again.steps.every(step => step.status === 'ok' && step.detail.includes('无需重复安装')));
+  await service.action({ type: 'packages.syncAll' });
+  assert.deepEqual(executed, []);
+
+  // 自定义安装命令同样受已安装判断约束
+  await service.action({
+    type: 'package.save',
+    originalId: 'lazy-dev',
+    package: { ...ponytail, id: 'lazy-dev', commands: { 'claude-code': { install: 'echo custom-install' } } },
+  });
+  await service.action({ type: 'package.install', id: 'lazy-dev', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, []);
+
+  // 其他来源占用同一包 ID 时提示重命名
+  await assert.rejects(
+    service.action({ type: 'package.save', package: { ...ponytail, id: 'lazy-dev', repo: 'https://github.com/acme/other', plugin: { name: 'other', marketplace: 'other-market' } } }),
+    { status: 409, message: /请重命名/ },
+  );
 
   const scan = await service.action({ type: 'local.scan' });
-  const claudeScan = scan.report.harnesses['claude-code'];
-  assert.equal(claudeScan.plugins.find(p => p.name === 'ponytail').managedBy, 'ponytail');
-  assert.ok(!scan.report.importCandidates.some(c => c.candidateId.endsWith('#ponytail')));
-  const other = scan.report.importCandidates.find(c => c.kind === 'plugin');
-  assert.equal(other.draft.repo, 'https://github.com/acme/other');
-  assert.deepEqual(other.draft.plugin, { name: 'other', marketplace: 'other-market' });
+  assert.equal(scan.report.harnesses['claude-code'].plugins.find(p => p.name === 'ponytail').managedBy, 'lazy-dev');
+  assert.equal(scan.report.harnesses['claude-code'].plugins.find(p => p.name === 'other').managedBy, null);
 
-  // 已安装时再次安装不重复执行插件命令；升级才刷新市场并更新
-  executed.length = 0;
-  const again = await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
-  assert.deepEqual(executed, []);
-  assert.equal(again.steps[0].status, 'ok');
-  await service.action({ type: 'package.upgrade', id: 'ponytail', harnesses: ['claude-code'] });
-  assert.deepEqual(executed, ['claude plugin marketplace update ponytail && claude plugin update ponytail@ponytail']);
+  // 升级才刷新市场并更新
+  await service.action({ type: 'package.upgrade', id: 'lazy-dev', harnesses: ['codex'] });
+  assert.deepEqual(executed, ['codex plugin marketplace upgrade ponytail && codex plugin add ponytail@ponytail']);
 
   executed.length = 0;
-  const removed = await service.action({ type: 'package.uninstall', id: 'ponytail' });
-  assert.deepEqual(executed, [
-    'codex plugin remove ponytail@ponytail',
-    'claude plugin uninstall ponytail@ponytail',
-    'agy plugin uninstall ponytail',
-  ]);
+  const removed = await service.action({ type: 'package.uninstall', id: 'lazy-dev', harnesses: ['codex', 'antigravity'] });
+  assert.deepEqual(executed, ['codex plugin remove ponytail@ponytail', 'agy plugin uninstall ponytail']);
   assert.equal(removed.state.packages[0].harnessStatuses.codex.status, 'uninstalled');
 });

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
-import { ENDPOINT, HARNESS_IDS, HARNESS_META, HEADER_KEY, KIND_LABELS, PLUGIN_ID } from './shared.mjs';
+import { ENDPOINT, HARNESS_IDS, HARNESS_META, HEADER_KEY, KIND_LABELS, PLUGIN_ID, unsupportedReason } from './shared.mjs';
 import styles from './client.css';
 
 export const name = `${PLUGIN_ID}-client`;
@@ -68,7 +68,7 @@ function emptyDraft() {
       url: '',
       envRefsText: '',
     },
-    plugin: { name: '', marketplace: '' },
+    plugin: { name: '', marketplace: '', harnesses: [] },
     commands: {},
   };
 }
@@ -96,7 +96,7 @@ function packageToDraft(pkg) {
       url: pkg.mcp?.url || '',
       envRefsText: Array.isArray(pkg.mcp?.envRefs) ? pkg.mcp.envRefs.join(', ') : '',
     },
-    plugin: { name: pkg.plugin?.name || '', marketplace: pkg.plugin?.marketplace || '' },
+    plugin: { name: pkg.plugin?.name || '', marketplace: pkg.plugin?.marketplace || '', harnesses: pkg.plugin?.harnesses || [] },
     commands: pkg.commands ? JSON.parse(JSON.stringify(pkg.commands)) : {},
   };
 }
@@ -136,7 +136,7 @@ function draftToPackage(draft) {
       url: draft.mcp.url.trim(),
       envRefs,
     },
-    plugin: { name: draft.plugin.name.trim(), marketplace: draft.plugin.marketplace.trim() },
+    plugin: { name: draft.plugin.name.trim(), marketplace: draft.plugin.marketplace.trim(), harnesses: draft.plugin.harnesses },
     commands: draft.commands,
   };
 }
@@ -181,6 +181,7 @@ export function PackagesPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingOriginalId, setEditingOriginalId] = useState('');
   const [draft, setDraft] = useState(emptyDraft);
+  const [nameTouched, setNameTouched] = useState(false);
   const [evidence, setEvidence] = useState(null);
   const [showCustomCommands, setShowCustomCommands] = useState(false);
 
@@ -244,9 +245,11 @@ export function PackagesPage() {
     try {
       const result = await postWithAutoKey({ type: 'repo.inspect', repo: draft.repo.trim() });
       const nextDraft = packageToDraft(result.draft);
+      // 已手动填写的名称与包 ID 不被解析结果覆盖；包 ID 留空时按名称生成
       setDraft(prev => ({
         ...nextDraft,
-        id: editingOriginalId ? prev.id : nextDraft.id,
+        id: prev.id,
+        name: editingOriginalId || nameTouched ? prev.name : nextDraft.name,
       }));
       setEvidence(result.evidence);
       if (nextDraft.kind === 'installer' || Object.keys(nextDraft.commands).length > 0) {
@@ -263,6 +266,7 @@ export function PackagesPage() {
   function openNewEditor() {
     setEditingOriginalId('');
     setDraft(emptyDraft());
+    setNameTouched(false);
     setEvidence(null);
     setShowCustomCommands(false);
     setEditorOpen(true);
@@ -321,6 +325,10 @@ export function PackagesPage() {
       }
     );
   }
+
+  const blockedTargets = draft.targets
+    .map(harnessId => [harnessId, unsupportedReason(draft, harnessId)])
+    .filter(([, reason]) => reason);
 
   const filteredPackages = useMemo(() => {
     const list = state?.packages ?? [];
@@ -512,12 +520,16 @@ export function PackagesPage() {
 
                   <div className="ap-grid-3">
                     <div className="ap-field">
-                      <label htmlFor="ap-name">显示名称</label>
+                      <label htmlFor="ap-name">名称（可重命名）</label>
                       <input
                         id="ap-name"
                         className="ap-input"
+                        placeholder="解析仓库后自动填写"
                         value={draft.name}
-                        onChange={e => setDraft(prev => ({ ...prev, name: e.target.value }))}
+                        onChange={e => {
+                          setNameTouched(true);
+                          setDraft(prev => ({ ...prev, name: e.target.value }));
+                        }}
                       />
                     </div>
                     <div className="ap-field">
@@ -525,7 +537,7 @@ export function PackagesPage() {
                       <input
                         id="ap-id"
                         className="ap-input"
-                        placeholder="留空自动从仓库名生成"
+                        placeholder={editingOriginalId ? '' : '留空按名称自动生成'}
                         value={draft.id}
                         disabled={Boolean(editingOriginalId)}
                         onChange={e => setDraft(prev => ({ ...prev, id: e.target.value }))}
@@ -595,19 +607,30 @@ export function PackagesPage() {
                   </div>
 
                   <div className="ap-field">
-                    <label>目标 Harness</label>
+                    <label>目标 Harness（前置检查）</label>
                     <div className="ap-check-group">
-                      {HARNESS_IDS.map(harnessId => (
-                        <label key={harnessId} className="ap-check-item">
-                          <input
-                            type="checkbox"
-                            checked={draft.targets.includes(harnessId)}
-                            onChange={() => toggleTarget(harnessId)}
-                          />
-                          <span>{HARNESS_META[harnessId].label}</span>
-                        </label>
-                      ))}
+                      {HARNESS_IDS.map(harnessId => {
+                        const reason = unsupportedReason(draft, harnessId);
+                        const checked = draft.targets.includes(harnessId);
+                        return (
+                          <label key={harnessId} className="ap-check-item">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={Boolean(reason) && !checked}
+                              onChange={() => toggleTarget(harnessId)}
+                            />
+                            <span>{HARNESS_META[harnessId].label}</span>
+                            {reason && <span className="ap-help">不支持：{reason}</span>}
+                          </label>
+                        );
+                      })}
                     </div>
+                    {blockedTargets.length > 0 && (
+                      <p className="ap-field-error" role="alert">
+                        已勾选不支持的 Harness：{blockedTargets.map(([h]) => HARNESS_META[h].label).join('、')}，请取消勾选后再保存。
+                      </p>
+                    )}
                   </div>
 
                   {draft.kind === 'skills-repo' && (
@@ -665,7 +688,7 @@ export function PackagesPage() {
                           />
                         </div>
                       </div>
-                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，会跳过。</p>
+                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，不能勾选。</p>
                     </div>
                   )}
 
@@ -800,9 +823,9 @@ export function PackagesPage() {
 
                   <div className="ap-editor-footer">
                     <Button variant="outline" disabled={busy} onClick={() => setEditorOpen(false)}>取消</Button>
-                    <Button variant="outline" disabled={busy} onClick={() => void submitEditor({ installNow: false })}>仅保存清单</Button>
-                    <Button variant="outline" disabled={busy} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>保存并预览</Button>
-                    <Button variant="primary" disabled={busy} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>保存并安装</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>仅保存清单</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>保存并预览</Button>
+                    <Button variant="primary" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>保存并安装</Button>
                   </div>
                 </section>
               )}
@@ -811,21 +834,12 @@ export function PackagesPage() {
                 <div className="ap-empty">
                   <p>
                     {state.packages.length === 0
-                      ? '清单还是空的。你可以填入 GitHub 地址添加包，或先扫描本机已有 Skills / MCP 一键导入。'
+                      ? '清单还是空的。填入 GitHub 地址即可添加包；已安装的插件再次添加不会重复安装。'
                       : '当前筛选条件下没有匹配的包。'}
                   </p>
                   {state.packages.length === 0 && (
                     <div className="ap-actions" style={{ justifyContent: 'center' }}>
                       <Button variant="primary" onClick={openNewEditor}>添加第一个包</Button>
-                      <Button
-                        variant="outline"
-                        onClick={() => {
-                          setTab('doctor');
-                          void runAction({ type: 'local.scan' }, { onSuccess: res => setScanReport(res.report) });
-                        }}
-                      >
-                        扫描本机现状
-                      </Button>
                     </div>
                   )}
                 </div>
@@ -959,44 +973,6 @@ export function PackagesPage() {
                               </span>
                               {item.message}
                             </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-
-                  {scanReport.importCandidates.length > 0 && (
-                    <div className="ap-card" style={{ marginBottom: 12 }}>
-                      <h3 style={{ fontSize: 14, marginBottom: 4 }}>
-                        发现未纳管项（{scanReport.importCandidates.length}）
-                      </h3>
-                      <p className="ap-help" style={{ marginBottom: 8 }}>
-                        点击「导入清单」仅写入本插件清单，不会修改现有本机配置文件。
-                      </p>
-                      <ul className="ap-mini-list">
-                        {scanReport.importCandidates.map(candidate => (
-                          <li key={candidate.candidateId}>
-                            <div>
-                              <strong>{candidate.label}</strong>{' '}
-                              <span className="ap-help">
-                                出现于：{candidate.harnesses.map(h => HARNESS_META[h]?.label || h).join('、')}
-                              </span>
-                            </div>
-                            <Button
-                              variant="outline"
-                              disabled={busy}
-                              onClick={() => void runAction(
-                                { type: 'local.import', draft: candidate.draft },
-                                {
-                                  onSuccess: () => void runAction(
-                                    { type: 'local.scan' },
-                                    { silentNotice: true, onSuccess: res => setScanReport(res.report) }
-                                  ),
-                                }
-                              )}
-                            >
-                              导入清单
-                            </Button>
                           </li>
                         ))}
                       </ul>

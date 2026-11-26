@@ -62,7 +62,8 @@ export function normalizePackage(input, existing) {
   if (!isPlainObject(input)) throw new Error('包定义必须是对象');
   const repo = normalizeRepoUrl(input.repo ?? existing?.repo ?? '');
   const gh = parseGitHubSlug(repo);
-  const rawId = input.id ?? existing?.id ?? gh?.repo ?? input.name ?? '';
+  // 包 ID 留空时按名称生成（名称无法转成 ID 时用仓库名），重命名即可避开冲突
+  const rawId = input.id || existing?.id || slugifyId(input.name) || gh?.repo || '';
   const id = slugifyId(rawId);
   if (!id || !/^[a-z0-9][a-z0-9._-]*$/.test(id)) {
     throw new Error('包 ID 仅允许小写字母、数字、点、下划线和短横线，且以字母或数字开头');
@@ -126,6 +127,10 @@ export function normalizePackage(input, existing) {
   const pluginInput = isPlainObject(input.plugin) ? input.plugin : (existing?.plugin ?? {});
   const pluginName = slugifyId(pluginInput.name || id) || id;
   const pluginMarketplace = slugifyId(pluginInput.marketplace || pluginName) || pluginName;
+  // 插件清单声明可装的 Harness（解析仓库得到）；旧条目没有该字段时为空，不做限制
+  const pluginHarnesses = Array.isArray(pluginInput.harnesses)
+    ? HARNESS_IDS.filter(h => pluginInput.harnesses.includes(h))
+    : [];
 
   const now = new Date().toISOString();
   return {
@@ -155,6 +160,7 @@ export function normalizePackage(input, existing) {
     plugin: {
       name: pluginName,
       marketplace: pluginMarketplace,
+      harnesses: pluginHarnesses,
     },
     commands,
     createdAt: existing?.createdAt ?? now,

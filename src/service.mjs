@@ -1,9 +1,16 @@
 import { HARNESS_IDS, HARNESS_META, resolveHarnessPaths } from './constants.mjs';
-import { PackageStore, normalizePackage, slugifyId } from './store.mjs';
+import { unsupportedReason } from './shared.mjs';
+import { PackageStore, normalizePackage } from './store.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
 import { applyPackageAction, defaultExecFile, defaultRunShell } from './installer.mjs';
 import { scanLocalEnvironment } from './scanner.mjs';
 import { HttpError } from './http.mjs';
+
+function sameSource(a, b) {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === 'plugin') return a.plugin.name === b.plugin.name && a.plugin.marketplace === b.plugin.marketplace;
+  return Boolean(a.repo) && a.repo === b.repo;
+}
 
 export class PackageManagerService {
   constructor(options = {}) {
@@ -115,16 +122,30 @@ export class PackageManagerService {
         const rawPkg = input.package;
         if (!rawPkg || typeof rawPkg !== 'object') throw new HttpError(400, '缺少 package 对象');
         const originalId = typeof input.originalId === 'string' ? input.originalId.trim() : '';
-        const existingIndex = manifest.packages.findIndex(p => p.id === (originalId || rawPkg.id));
-        const existing = existingIndex >= 0 ? manifest.packages[existingIndex] : undefined;
         let normalized;
+        let existingIndex;
         try {
-          normalized = normalizePackage(rawPkg, existing);
+          if (originalId) {
+            existingIndex = manifest.packages.findIndex(p => p.id === originalId);
+          } else {
+            // 添加幂等：同一来源（插件按 名@市场，其他按仓库）再次添加时更新原条目，不新增重复项
+            const probe = normalizePackage(rawPkg);
+            existingIndex = manifest.packages.findIndex(p => sameSource(p, probe));
+          }
+          const existing = existingIndex >= 0 ? manifest.packages[existingIndex] : undefined;
+          normalized = normalizePackage(existing ? { ...rawPkg, id: existing.id } : rawPkg, existing);
         } catch (error) {
           throw new HttpError(400, error.message);
         }
         const duplicate = manifest.packages.find((p, i) => p.id === normalized.id && i !== existingIndex);
-        if (duplicate) throw new HttpError(409, `包 ID「${normalized.id}」已存在`);
+        if (duplicate) throw new HttpError(409, `包 ID「${normalized.id}」已被「${duplicate.name}」使用，请重命名或修改包 ID`);
+        const blocked = normalized.targets
+          .map(h => [h, unsupportedReason(normalized, h)])
+          .filter(([, reason]) => reason);
+        if (blocked.length) {
+          throw new HttpError(400, `前置检查未通过：${blocked.map(([h, reason]) => `${HARNESS_META[h].label}${reason}`).join('；')}。请取消勾选后再保存`);
+        }
+        const reAdded = !originalId && existingIndex >= 0;
 
         const nextPackages = [...manifest.packages];
         if (existingIndex >= 0) nextPackages[existingIndex] = normalized;
@@ -152,9 +173,9 @@ export class PackageManagerService {
           }
         }
         return {
-          message: input.installNow
+          message: (reAdded ? `「${normalized.name}」已在清单中，已更新原条目；` : '') + (input.installNow
             ? (input.dryRun ? `已保存「${normalized.name}」并生成安装预览` : `已保存并执行「${normalized.name}」安装`)
-            : `已保存包配置「${normalized.name}」`,
+            : `已保存包配置「${normalized.name}」`),
           package: normalized,
           steps,
           state: await this.state(),
@@ -416,28 +437,8 @@ export class PackageManagerService {
           lock,
         });
         return {
-          message: `本机扫描完成：发现 ${report.importCandidates.length} 项未纳管配置、${report.warnings.length} 条提示`,
+          message: `本机扫描完成：${report.warnings.length} 条提示`,
           report,
-        };
-      }
-
-      case 'local.import': {
-        const manifest = await this.store.readManifest();
-        const draft = input.draft;
-        if (!draft || typeof draft !== 'object') throw new HttpError(400, '缺少导入草稿 draft');
-        let baseId = slugifyId(draft.id || draft.name || 'imported-pkg') || 'imported-pkg';
-        let id = baseId;
-        let suffix = 2;
-        while (manifest.packages.some(p => p.id === id)) {
-          id = `${baseId}-${suffix++}`;
-        }
-        const normalized = normalizePackage({ ...draft, id });
-        manifest.packages.push(normalized);
-        await this.store.writeManifest(manifest);
-        return {
-          message: `已导入「${normalized.name}」到包清单（未改动现有配置文件）`,
-          package: normalized,
-          state: await this.state(),
         };
       }
 
