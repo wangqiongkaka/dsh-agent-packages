@@ -365,7 +365,7 @@ test('插件端到端：调用各端插件命令安装、读回版本、扫描�
     },
   });
   assert.deepEqual(executed, [
-    "codex plugin marketplace add 'DietrichGebert/ponytail' --ref 'v5.3.3' && codex plugin add ponytail@ponytail",
+    "codex plugin marketplace add 'DietrichGebert/ponytail' && codex plugin add ponytail@ponytail",
     "claude plugin marketplace add 'DietrichGebert/ponytail' && claude plugin install ponytail@ponytail",
     "agy plugin install 'https://github.com/DietrichGebert/ponytail'",
   ]);
@@ -385,9 +385,13 @@ test('插件端到端：调用各端插件命令安装、读回版本、扫描�
   assert.equal(other.draft.repo, 'https://github.com/acme/other');
   assert.deepEqual(other.draft.plugin, { name: 'other', marketplace: 'other-market' });
 
+  // 已安装时再次安装不重复执行插件命令；升级才刷新市场并更新
   executed.length = 0;
-  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
-  assert.deepEqual(executed, ['claude plugin marketplace update ponytail && claude plugin install ponytail@ponytail']);
+  const again = await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, []);
+  assert.equal(again.steps[0].status, 'ok');
+  await service.action({ type: 'package.upgrade', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ['claude plugin marketplace update ponytail && claude plugin update ponytail@ponytail']);
 
   executed.length = 0;
   const removed = await service.action({ type: 'package.uninstall', id: 'ponytail' });

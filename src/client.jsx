@@ -506,7 +506,7 @@ export function PackagesPage() {
                       {evidence.discoveredSkills?.length ? <> · 发现 {evidence.discoveredSkills.length} 个 Skills（{evidence.discoveredSkills.slice(0, 6).join(', ')}{evidence.discoveredSkills.length > 6 ? '…' : ''}）</> : null}
                       {evidence.npmPackage ? <> · npm 包 <code>{evidence.npmPackage}</code></> : null}
                       {evidence.pythonPackage ? <> · Python 包 <code>{evidence.pythonPackage}</code></> : null}
-                      {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，安装时会注册 Hooks：{evidence.plugin.hookEvents.join('、')}</> : '，未声明 Hooks'}</> : null}
+                      {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，声明 Hooks：{evidence.plugin.hookEvents.join('、')}（Claude Code / Codex 安装时注册）</> : '，未声明 Hooks'}</> : null}
                     </div>
                   )}
 
@@ -665,7 +665,7 @@ export function PackagesPage() {
                           />
                         </div>
                       </div>
-                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；DSH 原生暂无插件机制，会跳过。</p>
+                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，会跳过。</p>
                     </div>
                   )}
 

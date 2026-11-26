@@ -271,6 +271,8 @@ export function buildPluginCommand(pkg, harnessId, action, installed = {}) {
   const gh = parseGitHubSlug(pkg.repo);
   const source = gh ? gh.slug : pkg.repo;
   const marketplaceKnown = Object.hasOwn(installed[harnessId]?.marketplaces ?? {}, marketplace);
+  // 各端插件命令都从仓库默认分支安装，锁定的 ref 只用于检查更新
+  const refWarning = pkg.ref ? [`插件从仓库默认分支安装，锁定的 ${pkg.ref} 仅用于检查更新`] : [];
   if (action !== 'uninstall' && !source) throw new Error('插件类型需要填写 GitHub 仓库地址（插件市场来源）');
 
   if (harnessId === 'claude-code') {
@@ -281,36 +283,50 @@ export function buildPluginCommand(pkg, harnessId, action, installed = {}) {
     const verb = action === 'upgrade' && marketplaceKnown ? 'update' : 'install';
     return {
       command: `${refresh} && claude plugin ${verb} ${id}`,
-      warnings: [
-        '插件 hooks 由 Claude Code 注册，重启 Claude Code 或新开会话后生效',
-        ...(pkg.ref ? [`Claude Code 插件市场跟随仓库默认分支，锁定的 ${pkg.ref} 不会作用于安装版本`] : []),
-      ],
+      warnings: ['插件 hooks 由 Claude Code 注册，新开会话后生效', ...refWarning],
     };
   }
   if (harnessId === 'codex') {
     if (action === 'uninstall') return { command: `codex plugin remove ${id}`, warnings: [] };
     const refresh = marketplaceKnown
       ? `codex plugin marketplace upgrade ${marketplace}`
-      : `codex plugin marketplace add ${shellQuote(source)}${pkg.ref ? ` --ref ${shellQuote(pkg.ref)}` : ''}`;
+      : `codex plugin marketplace add ${shellQuote(source)}`;
     return {
       command: `${refresh} && codex plugin add ${id}`,
-      warnings: ['插件 hooks 需在 Codex 中打开 /hooks 审核并信任后才会运行，新建会话后生效'],
+      warnings: ['插件 hooks 需在 Codex 中打开 /hooks 审核并信任后才会运行，新建会话后生效', ...refWarning],
     };
   }
   if (harnessId === 'antigravity') {
     if (action === 'uninstall') return { command: `agy plugin uninstall ${name}`, warnings: [] };
     const target = shellQuote(gh ? gh.url : pkg.repo);
-    const alreadyInstalled = (installed.antigravity?.plugins ?? []).some(p => p.name === name);
+    const reinstall = action === 'upgrade' && (installed.antigravity?.plugins ?? []).some(p => p.name === name);
     return {
-      command: alreadyInstalled ? `agy plugin uninstall ${name} && agy plugin install ${target}` : `agy plugin install ${target}`,
-      warnings: pkg.ref ? [`Antigravity 从仓库默认分支安装插件，锁定的 ${pkg.ref} 不会作用于安装版本`] : [],
+      command: reinstall ? `agy plugin uninstall ${name} && agy plugin install ${target}` : `agy plugin install ${target}`,
+      warnings: refWarning,
     };
   }
   return null;
 }
 
+function findInstalledPlugin(installed, pkg, harnessId) {
+  return (installed[harnessId]?.plugins ?? []).find(p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace));
+}
+
 async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, options) {
   const installed = await readInstalledPlugins(harnessPaths);
+  const existing = findInstalledPlugin(installed, pkg, harnessId);
+  if (action === 'install' && existing) {
+    // 已安装时“安装/全部同步”不重复执行插件命令，更新走升级
+    return {
+      harness: harnessId,
+      action,
+      method: 'adapter',
+      status: options.dryRun ? 'preview' : 'ok',
+      detail: `已安装${existing.version ? ` ${existing.version}` : ''}，无需重复安装；如需更新请使用升级`,
+      installedVersion: existing.version || undefined,
+      warnings: [],
+    };
+  }
   const built = buildPluginCommand(pkg, harnessId, action, installed);
   if (!built) {
     return {
@@ -325,9 +341,11 @@ async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, option
   const step = await runCustomCommand(pkg, harnessId, action, built.command, '', { ...options, repoSynced: false });
   const result = { ...step, method: 'adapter', warnings: built.warnings };
   if (!options.dryRun && action !== 'uninstall') {
-    const after = await readInstalledPlugins(harnessPaths);
-    const match = (after[harnessId]?.plugins ?? []).find(p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace));
+    const match = findInstalledPlugin(await readInstalledPlugins(harnessPaths), pkg, harnessId);
     if (match?.version) result.installedVersion = match.version;
+    if (action === 'upgrade' && pkg.version && match?.version && match.version !== pkg.version) {
+      result.warnings = [...result.warnings, `读回的安装版本 ${match.version} 与目标版本 ${pkg.version} 不一致，可能需等待插件市场更新`];
+    }
   }
   return result;
 }
