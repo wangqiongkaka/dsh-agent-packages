@@ -340,6 +340,9 @@
   margin-bottom: 16px;
   border-color: color-mix(in srgb, var(--ap-accent) 45%, transparent);
 }
+.ap-list > .ap-editor {
+  margin-bottom: 0;
+}
 .ap-editor-head {
   display: flex;
   align-items: center;

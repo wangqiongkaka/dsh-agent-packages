@@ -163,6 +163,25 @@ try {
   await page.getByText('Hindsight Memory').waitFor();
   await page.screenshot({ path: 'artifacts/packages-desktop.png', fullPage: true });
 
+  // 0. 编辑已有包时原位展开，不在下方重复展示该包的摘要卡片
+  await page.locator('.ap-pkg-card').nth(1).getByRole('button', { name: '编辑' }).click();
+  await page.getByRole('heading', { name: '编辑 hindsight' }).waitFor();
+  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 1, '编辑已有包应在列表原位展开');
+  assert.equal(await page.locator('.ap-pkg-card').count(), 1, '编辑时不应重复展示当前包的摘要卡片');
+  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'Hindsight Memory' }).count(), 0);
+  const firstCardBox = await page.locator('.ap-pkg-card').first().boundingBox();
+  const inlineEditorBox = await page.locator('.ap-list > .ap-editor').boundingBox();
+  assert.ok(firstCardBox && inlineEditorBox && firstCardBox.y < inlineEditorBox.y, '编辑第 2 个包时应保持原位置顺序');
+  // 编辑期间若被筛选条件排除，仍回落到顶部保留编辑状态
+  await page.locator('.ap-search').fill('Firecrawl');
+  assert.equal(await page.locator('.ap-editor').count(), 1, '被筛选排除时仍应保留编辑面板');
+  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 0);
+  await page.locator('.ap-search').fill('');
+  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 1);
+  await page.getByRole('button', { name: '收起' }).click();
+  assert.equal(await page.locator('.ap-editor').count(), 0);
+  assert.equal(await page.locator('.ap-pkg-card').count(), 2, '收起后应恢复全部包卡片');
+
   // 1. 打开添加包 → 解析 GitHub 仓库 → 截图 → 保存并安装
   await page.getByRole('button', { name: '添加包' }).click();
   await page.locator('#ap-repo').fill('microsoft/playwright-mcp');
