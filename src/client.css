@@ -137,7 +137,157 @@
 .ap-input, .ap-select { height: 36px; }
 .ap-textarea { min-height: 68px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .ap-search { flex: 1 1 160px; min-width: 120px; max-width: 260px; width: auto; }
-.ap-filter-select { width: auto; min-width: 112px; flex-shrink: 0; }
+
+.ap-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ap-select-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+.ap-select-wrap.is-open { z-index: 30; }
+.ap-filter-select { width: auto; min-width: 124px; flex-shrink: 0; }
+.ap-select-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border: 1px solid var(--ap-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--ap-text) 4%, var(--ap-bg));
+  color: var(--ap-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+.ap-select-trigger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--ap-text) 28%, var(--ap-line));
+  background: color-mix(in srgb, var(--ap-text) 7%, var(--ap-bg));
+}
+.ap-select-wrap.is-open .ap-select-trigger,
+.ap-select-trigger:focus-visible {
+  border-color: var(--ap-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ap-accent) 22%, transparent);
+  outline: none;
+}
+.ap-select-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ap-select-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.ap-select-chevron {
+  flex-shrink: 0;
+  color: var(--ap-muted);
+  transition: transform 150ms ease, color 150ms ease;
+}
+.ap-select-trigger:hover:not(:disabled) .ap-select-chevron,
+.ap-select-wrap.is-open .ap-select-chevron {
+  color: var(--ap-text);
+}
+.ap-select-wrap.is-open .ap-select-chevron {
+  transform: rotate(180deg);
+}
+.ap-select-menu {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  z-index: 35;
+  min-width: 100%;
+  width: max-content;
+  max-width: min(360px, calc(100vw - 32px));
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--ap-text) 14%, var(--ap-line));
+  border-radius: 10px;
+  background: var(--ap-bg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.34), 0 2px 6px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ap-select-menu-right {
+  left: auto;
+  right: 0;
+}
+.ap-select-option {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--ap-text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 100ms ease, color 100ms ease;
+}
+.ap-select-option.is-active,
+.ap-select-option:hover {
+  background: color-mix(in srgb, var(--ap-text) 8%, transparent);
+}
+.ap-select-option[aria-selected="true"] {
+  background: color-mix(in srgb, var(--ap-accent) 14%, transparent);
+  font-weight: 500;
+}
+.ap-select-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ap-select-option-tail {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.ap-select-option-meta {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--ap-muted);
+}
+.ap-select-check-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+.ap-select-check {
+  color: var(--ap-accent);
+  flex-shrink: 0;
+}
 
 .ap-banner-error {
   display: flex;
@@ -480,11 +630,75 @@
 }
 .ap-empty p { margin-bottom: 12px; }
 
-.ap-scan-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.ap-doctor-card {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  margin-top: 12px;
+}
+.ap-doctor-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--ap-line) 70%, transparent);
+}
+.ap-doctor-switcher {
+  flex: 0 1 200px;
+  min-width: 156px;
+}
+.ap-doctor-select .ap-select-trigger {
+  font-weight: 600;
+}
+.ap-doctor-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ap-doctor-paths {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--ap-line) 70%, transparent);
+  background: color-mix(in srgb, var(--ap-text) 2.5%, transparent);
+}
+.ap-doctor-path-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  min-width: 0;
+}
+.ap-doctor-path-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--ap-muted);
+  min-width: 62px;
+}
+.ap-doctor-path-row > code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ap-doctor-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ap-doctor-group h4 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ap-muted);
+}
+.ap-doctor-group .ap-mini-list {
+  margin-top: 2px;
+}
+.ap-doctor-empty {
+  margin-top: 0;
 }
 .ap-mini-list {
   list-style: none;
@@ -502,6 +716,13 @@
   gap: 8px;
   padding: 4px 0;
   border-bottom: 1px solid color-mix(in srgb, var(--ap-line) 50%, transparent);
+}
+.ap-mini-list li > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ap-mini-list li > .ap-badge {
+  flex-shrink: 0;
 }
 .ap-mini-list li:last-child { border-bottom: 0; }
 .ap-help { font-size: 12px; color: var(--ap-muted); margin-top: 6px; }
@@ -533,8 +754,8 @@
 }
 
 @media (max-width: 720px) {
-  .ap-scan-grid {
-    grid-template-columns: 1fr;
+  .ap-doctor-switcher {
+    flex: 1 1 160px;
   }
   .ap-inspect-row {
     flex-direction: column;

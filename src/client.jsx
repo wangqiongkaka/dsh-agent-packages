@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   CARD_KIND_LABELS,
@@ -181,6 +181,198 @@ function stepBadgeClass(status) {
   return 'ap-badge';
 }
 
+const FILTER_KIND_OPTIONS = [
+  { value: 'all', label: '全部类型' },
+  { value: 'skills-repo', label: 'Skills 仓库' },
+  { value: 'plugin', label: '插件（含 Hooks）' },
+  { value: 'mcp', label: 'MCP Server' },
+  { value: 'installer', label: '自定义安装器' },
+  { value: 'outdated', label: '仅看可升级' },
+  { value: 'pending', label: '仅看待安装' },
+  { value: 'failed', label: '仅看失败' },
+];
+
+const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
+
+const SKILLS_MODE_OPTIONS = [
+  { value: 'symlink', label: '软链接（推荐）' },
+  { value: 'copy', label: '复制' },
+];
+
+const MCP_TRANSPORT_OPTIONS = [
+  { value: 'stdio', label: 'Stdio' },
+  { value: 'http', label: 'HTTP' },
+];
+
+function Select({
+  id,
+  value,
+  options,
+  onChange,
+  ariaLabel,
+  className = '',
+  menuAlign = 'left',
+  disabled = false,
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const wrapRef = useRef(null);
+  const triggerRef = useRef(null);
+  const listId = useId();
+
+  const selectedIndex = Math.max(0, options.findIndex(opt => opt.value === value));
+  const selectedOption = options[selectedIndex] || options[0] || null;
+
+  useEffect(() => {
+    if (disabled && open) setOpen(false);
+  }, [disabled, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = event => {
+      if (wrapRef.current && !wrapRef.current.contains(event.target)) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = event => {
+      if (event.key === 'Escape') {
+        event.stopPropagation();
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  function openMenu() {
+    if (disabled || !options.length) return;
+    setActiveIndex(selectedIndex);
+    setOpen(true);
+  }
+
+  function commit(index) {
+    const opt = options[index];
+    if (!opt) return;
+    if (opt.value !== value) onChange(opt.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function handleTriggerKeyDown(event) {
+    if (disabled || !options.length) return;
+    if (!open) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) {
+        event.preventDefault();
+        openMenu();
+      }
+      return;
+    }
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex(i => (i + 1) % options.length);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex(i => (i - 1 + options.length) % options.length);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setActiveIndex(options.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      commit(activeIndex >= 0 ? activeIndex : selectedIndex);
+    } else if (event.key === 'Tab') {
+      setOpen(false);
+    }
+  }
+
+  return (
+    <div
+      ref={wrapRef}
+      className={`ap-select-wrap ${open ? 'is-open' : ''} ${className}`.trim()}
+    >
+      <button
+        ref={triggerRef}
+        id={id}
+        type="button"
+        role="combobox"
+        disabled={disabled}
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={open && activeIndex >= 0 ? `${listId}-opt-${activeIndex}` : undefined}
+        className="ap-select-trigger"
+        onClick={() => (open ? setOpen(false) : openMenu())}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span className="ap-select-value">{selectedOption?.label ?? ''}</span>
+        <svg className="ap-select-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          <path
+            d="M4.25 6.25L8 10l3.75-3.75"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.65"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </button>
+      {open && (
+        <div
+          id={listId}
+          role="listbox"
+          aria-label={ariaLabel}
+          className={`ap-select-menu ${menuAlign === 'right' ? 'ap-select-menu-right' : ''}`.trim()}
+        >
+          {options.map((opt, idx) => {
+            const selected = opt.value === value;
+            const active = idx === activeIndex;
+            return (
+              <button
+                key={opt.value}
+                id={`${listId}-opt-${idx}`}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                className={`ap-select-option ${active ? 'is-active' : ''}`.trim()}
+                onMouseEnter={() => setActiveIndex(idx)}
+                onMouseDown={e => e.preventDefault()}
+                onClick={() => commit(idx)}
+              >
+                <span className="ap-select-option-label">{opt.label}</span>
+                <span className="ap-select-option-tail">
+                  {opt.meta && <span className="ap-select-option-meta">{opt.meta}</span>}
+                  <span className="ap-select-check-slot" aria-hidden="true">
+                    {selected && (
+                      <svg className="ap-select-check" viewBox="0 0 16 16" width="14" height="14">
+                        <path
+                          d="M3.5 8.5L6.5 11.5L12.5 4.75"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function PackagesPage() {
   const [state, setState] = useState(null);
   const [sessionKey, setSessionKey] = useState('');
@@ -202,6 +394,7 @@ export function PackagesPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [scanReport, setScanReport] = useState(null);
+  const [doctorHarness, setDoctorHarness] = useState(HARNESS_IDS[0]);
   const [openMenuId, setOpenMenuId] = useState('');
 
   useEffect(() => {
@@ -560,22 +753,14 @@ export function PackagesPage() {
 
             {tab === 'packages' && showFilters && (
               <div className="ap-filters">
-                <select
+                <Select
                   id="ap-filter-kind"
-                  aria-label="按类型筛选"
-                  className="ap-select ap-filter-select"
+                  ariaLabel="按类型筛选"
+                  className="ap-filter-select"
                   value={filterKind}
-                  onChange={e => setFilterKind(e.target.value)}
-                >
-                  <option value="all">全部类型</option>
-                  <option value="skills-repo">Skills 仓库</option>
-                  <option value="plugin">插件（含 Hooks）</option>
-                  <option value="mcp">MCP Server</option>
-                  <option value="installer">自定义安装器</option>
-                  <option value="outdated">仅看可升级</option>
-                  <option value="pending">仅看待安装</option>
-                  <option value="failed">仅看失败</option>
-                </select>
+                  options={FILTER_KIND_OPTIONS}
+                  onChange={setFilterKind}
+                />
                 <input
                   type="search"
                   aria-label="搜索包名称或 GitHub 地址"
@@ -648,16 +833,13 @@ export function PackagesPage() {
                     </div>
                     <div className="ap-field">
                       <label htmlFor="ap-kind">类型</label>
-                      <select
+                      <Select
                         id="ap-kind"
-                        className="ap-select"
+                        ariaLabel="类型"
                         value={draft.kind}
-                        onChange={e => setDraft(prev => ({ ...prev, kind: e.target.value }))}
-                      >
-                        {Object.entries(KIND_LABELS).map(([kind, label]) => (
-                          <option key={kind} value={kind}>{label}</option>
-                        ))}
-                      </select>
+                        options={KIND_OPTIONS}
+                        onChange={nextKind => setDraft(prev => ({ ...prev, kind: nextKind }))}
+                      />
                     </div>
                   </div>
 
@@ -693,15 +875,13 @@ export function PackagesPage() {
                       <div className="ap-grid">
                         <div className="ap-field">
                           <label htmlFor="ap-skills-mode">安装方式</label>
-                          <select
+                          <Select
                             id="ap-skills-mode"
-                            className="ap-select"
+                            ariaLabel="安装方式"
                             value={draft.skills.mode}
-                            onChange={e => setDraft(prev => ({ ...prev, skills: { ...prev.skills, mode: e.target.value } }))}
-                          >
-                            <option value="symlink">软链接（推荐）</option>
-                            <option value="copy">复制</option>
-                          </select>
+                            options={SKILLS_MODE_OPTIONS}
+                            onChange={mode => setDraft(prev => ({ ...prev, skills: { ...prev.skills, mode } }))}
+                          />
                         </div>
                         <div className="ap-field">
                           <label htmlFor="ap-skills-include">指定 Skills</label>
@@ -762,15 +942,13 @@ export function PackagesPage() {
                         </div>
                         <div className="ap-field">
                           <label htmlFor="ap-mcp-transport">传输方式</label>
-                          <select
+                          <Select
                             id="ap-mcp-transport"
-                            className="ap-select"
+                            ariaLabel="传输方式"
                             value={draft.mcp.transport}
-                            onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, transport: e.target.value } }))}
-                          >
-                            <option value="stdio">Stdio</option>
-                            <option value="http">HTTP</option>
-                          </select>
+                            options={MCP_TRANSPORT_OPTIONS}
+                            onChange={transport => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, transport } }))}
+                          />
                         </div>
                         {draft.mcp.transport === 'stdio' ? (
                           <>
@@ -1146,58 +1324,103 @@ export function PackagesPage() {
             );
           })()}
 
-          {tab === 'doctor' && (
-            <section aria-label="本机扫描与诊断">
-              <div className="ap-actions" style={{ marginBottom: 12 }}>
-                <Button
-                  variant="primary"
-                  disabled={busy}
-                  onClick={() => void runAction({ type: 'local.scan' }, { onSuccess: res => setScanReport(res.report) })}
-                >
-                  重新扫描
-                </Button>
-                {scanReport && (
-                  <span className="ap-help">上次扫描：{new Date(scanReport.scannedAt).toLocaleString()}</span>
-                )}
-              </div>
+          {tab === 'doctor' && (() => {
+            const availableHarnesses = HARNESS_IDS.filter(id => scanReport?.harnesses?.[id]);
+            const activeHarness = availableHarnesses.includes(doctorHarness)
+              ? doctorHarness
+              : (availableHarnesses[0] || HARNESS_IDS[0]);
+            const info = scanReport?.harnesses?.[activeHarness] || null;
+            const harnessOptions = availableHarnesses.map(harnessId => {
+              const h = scanReport.harnesses[harnessId];
+              const stats = [`Skills ${h.skillsCount}`, `MCP ${h.mcpCount}`];
+              if (h.pluginsCount > 0) stats.push(`插件 ${h.pluginsCount}`);
+              return {
+                value: harnessId,
+                label: HARNESS_META[harnessId].label,
+                meta: stats.join(' · '),
+              };
+            });
 
-              {!scanReport ? (
-                <p className="ap-help" role="status">正在扫描本机 4 个 Harness 配置…</p>
-              ) : (
-                <>
-                  {scanReport.warnings.length > 0 && (
-                    <div className="ap-card" style={{ marginBottom: 12 }}>
-                      <h3 style={{ fontSize: 14, marginBottom: 8 }}>诊断提示（{scanReport.warnings.length}）</h3>
-                      <ul className="ap-mini-list">
-                        {scanReport.warnings.map((item, idx) => (
-                          <li key={idx}>
-                            <span>
-                              <span className="ap-badge ap-badge-update" style={{ marginRight: 8 }}>
-                                {HARNESS_META[item.harness]?.label || item.harness}
-                              </span>
-                              {item.message}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+            return (
+              <section aria-label="本机扫描与诊断">
+                <div className="ap-actions" style={{ marginBottom: 12 }}>
+                  <Button
+                    variant="primary"
+                    disabled={busy}
+                    onClick={() => void runAction({ type: 'local.scan' }, { onSuccess: res => setScanReport(res.report) })}
+                  >
+                    重新扫描
+                  </Button>
+                  {scanReport && (
+                    <span className="ap-help" style={{ marginTop: 0 }}>
+                      上次扫描：{new Date(scanReport.scannedAt).toLocaleString()}
+                    </span>
                   )}
+                </div>
 
-                  <div className="ap-scan-grid">
-                    {HARNESS_IDS.map(harnessId => {
-                      const info = scanReport.harnesses[harnessId];
-                      if (!info) return null;
-                      return (
-                        <div key={harnessId} className="ap-card">
-                          <div className="ap-pkg-title-row" style={{ marginBottom: 6 }}>
-                            <strong style={{ fontSize: 14 }}>{HARNESS_META[harnessId].label}</strong>
+                {!scanReport ? (
+                  <p className="ap-help" role="status">正在扫描本机 4 个 Harness 配置…</p>
+                ) : (
+                  <>
+                    {scanReport.warnings.length > 0 && (
+                      <div className="ap-card" style={{ marginBottom: 12 }}>
+                        <h3 style={{ fontSize: 14, marginBottom: 8 }}>诊断提示（{scanReport.warnings.length}）</h3>
+                        <ul className="ap-mini-list">
+                          {scanReport.warnings.map((item, idx) => (
+                            <li key={idx}>
+                              <span>
+                                <span className="ap-badge ap-badge-update" style={{ marginRight: 8 }}>
+                                  {HARNESS_META[item.harness]?.label || item.harness}
+                                </span>
+                                {item.message}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {info && (
+                      <article className="ap-card ap-doctor-card" aria-label={`${HARNESS_META[activeHarness].label} 本机配置`}>
+                        <div className="ap-doctor-head">
+                          <div className="ap-doctor-switcher">
+                            <label htmlFor="ap-doctor-harness" className="ap-sr-only">选择 Harness</label>
+                            <Select
+                              id="ap-doctor-harness"
+                              ariaLabel="选择 Harness"
+                              className="ap-doctor-select"
+                              value={activeHarness}
+                              options={harnessOptions}
+                              onChange={setDoctorHarness}
+                            />
+                          </div>
+                          <div className="ap-doctor-stats">
                             <span className="ap-badge">Skills: {info.skillsCount}</span>
                             <span className="ap-badge">MCP: {info.mcpCount}</span>
                             {info.pluginsCount > 0 && <span className="ap-badge">插件: {info.pluginsCount}</span>}
                           </div>
-                          <p className="ap-help">Skills 目录：<code>{info.skillsDir}</code></p>
-                          {info.mcpFile && <p className="ap-help">MCP 文件：<code>{info.mcpFile}</code></p>}
-                          {info.mcpServers.length > 0 && (
+                        </div>
+
+                        <div className="ap-doctor-paths">
+                          <div className="ap-doctor-path-row">
+                            <span className="ap-doctor-path-label">Skills 目录</span>
+                            <code>{info.skillsDir}</code>
+                          </div>
+                          {info.mcpFile && (
+                            <div className="ap-doctor-path-row">
+                              <span className="ap-doctor-path-label">MCP 文件</span>
+                              <code>{info.mcpFile}</code>
+                            </div>
+                          )}
+                        </div>
+
+                        {info.mcpError && (
+                          <p className="ap-field-error" role="alert">MCP 配置解析失败：{info.mcpError}</p>
+                        )}
+
+                        {info.mcpServers.length > 0 && (
+                          <div className="ap-doctor-group">
+                            <h4>MCP Servers（{info.mcpServers.length}）</h4>
                             <ul className="ap-mini-list">
                               {info.mcpServers.map(server => (
                                 <li key={server.serverName}>
@@ -1208,27 +1431,38 @@ export function PackagesPage() {
                                 </li>
                               ))}
                             </ul>
-                          )}
-                          {info.plugins?.length > 0 && (
+                          </div>
+                        )}
+
+                        {info.plugins?.length > 0 && (
+                          <div className="ap-doctor-group">
+                            <h4>已装插件（{info.plugins.length}）</h4>
                             <ul className="ap-mini-list">
                               {info.plugins.map(plugin => (
                                 <li key={`${plugin.name}@${plugin.marketplace}`}>
-                                  <span><code>{plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name}</code>{plugin.version ? `（${plugin.version}）` : ''}</span>
+                                  <span>
+                                    <code>{plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name}</code>
+                                    {plugin.version ? `（${plugin.version}）` : ''}
+                                  </span>
                                   <span className={`ap-badge ${plugin.managedBy ? 'ap-badge-ok' : ''}`}>
                                     {plugin.managedBy ? `受管:${plugin.managedBy}` : '未纳管'}
                                   </span>
                                 </li>
                               ))}
                             </ul>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </section>
-          )}
+                          </div>
+                        )}
+
+                        {info.mcpServers.length === 0 && !(info.plugins?.length > 0) && (
+                          <p className="ap-help ap-doctor-empty">该端暂无已配置的 MCP Server 或已装插件。</p>
+                        )}
+                      </article>
+                    )}
+                  </>
+                )}
+              </section>
+            );
+          })()}
 
           {logs.length > 0 && (
             <section className="ap-logs" aria-label="最近执行记录">
