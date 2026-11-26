@@ -392,32 +392,59 @@ try {
   await page.getByRole('menuitem', { name: '卸载并移除' }).waitFor();
   await page.keyboard.press('Escape');
 
-  // 2b. 全局指令维护：导入现有内容、编辑私有内容、查看合并预览与外部标记块保留、软链拆分同步
+  // 2b. 全局指令维护：原样导入现有内容、编辑私有内容、查看合并预览、软链拆分同步
   await page.getByRole('tab', { name: '全局指令' }).click();
   await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).waitFor();
-  await page.getByRole('button', { name: '导入到公共' }).click();
-  await page.getByText(/已跳过外部标记块 CODEGRAPH/).waitFor();
+  // 导入来源收进「从文件导入」菜单，私有内容只用一个 Harness 下拉框切换；不再有按端启用开关
+  assert.equal(await page.locator('#ap-instr-import-source, #ap-instr-enabled').count(), 0);
+  assert.equal(await page.getByRole('button', { name: /更多操作/ }).count(), 0, '全局指令页不再有「更多」菜单');
+  assert.equal(await page.getByText(/外部标记块/).count(), 0, '不再提示自动保留外部标记块');
+  assert.equal(await page.getByRole('button', { name: '预览变更' }).count(), 0, '全局指令页不再有「预览变更」');
+  // 公共与私有均为空、草稿无修改：没有可同步的内容，不显示同步按钮
+  assert.equal(await page.getByRole('button', { name: '同步', exact: true }).count(), 0);
+  await page.getByRole('button', { name: '从文件导入 ▾' }).click();
+  await page.getByRole('menuitem', { name: /Claude Code/ }).waitFor();
+  assert.ok(await page.getByRole('menuitem', { name: /Claude Code/ }).isDisabled(), '未创建文件的端不可导入');
+  await page.getByRole('menuitem', { name: /Codex/ }).click();
+  await page.getByText('已从 Codex（AGENTS.md）导入到公共内容').waitFor();
   assert.match(await page.locator('#ap-instr-shared').inputValue(), /# 全局协作规则/);
-  assert.doesNotMatch(await page.locator('#ap-instr-shared').inputValue(), /CODEGRAPH_START/);
+  // 原样导入：外部工具写入的 CODEGRAPH 块也进入公共内容，由用户自行决定去留
+  assert.match(await page.locator('#ap-instr-shared').inputValue(), /CODEGRAPH_START/);
   await page.locator('#ap-instr-private').fill('## Codex 私有规则\n- 优先运行最小单测验证');
-  // 最终写入预览实时包含公共 + 私有 + 外部块 CODEGRAPH
+  // 最终写入预览默认折叠，展开后实时显示 公共 + 私有
+  assert.equal(await page.locator('.ap-instr-preview').isVisible(), false);
+  await page.getByText('最终写入预览').click();
   const codexPreview = await page.locator('.ap-instr-preview').innerText();
   assert.match(codexPreview, /# 全局协作规则/);
   assert.match(codexPreview, /## Codex 私有规则/);
   assert.match(codexPreview, /<!-- CODEGRAPH_START -->/);
   await page.screenshot({ path: 'artifacts/packages-instructions.png', fullPage: true });
 
-  // 切换到 DSH 原生（软链目标），验证软链提示并保存同步全部
+  // Harness 下拉框与「私有内容」标题同一行，宽度按内容收窄
+  const privateTitleBox = await page.getByRole('heading', { name: '私有内容' }).boundingBox();
+  const harnessSelectBox = await page.locator('#ap-instr-harness').boundingBox();
+  assert.ok(Math.abs(harnessSelectBox.y - privateTitleBox.y) < 12, '下拉框应与私有内容标题对齐');
+  assert.ok(harnessSelectBox.width < 220, `下拉框不应拉伸：${harnessSelectBox.width}px`);
+
+  // 切换到 DSH 原生（软链目标），验证软链提示并保存同步
   await page.locator('#ap-instr-harness').click();
   await page.getByRole('option', { name: /DSH 原生/ }).click();
+  assert.match(await page.locator('#ap-instr-harness').innerText(), /DSH 原生/);
   await page.getByText(/同步时将拆分为独立文件写入/).waitFor();
   await page.locator('#ap-instr-private').fill('## DSH 原生私有规则\n- 简短汇报执行进展');
-  await page.getByRole('button', { name: '保存并同步全部' }).click();
+  await page.getByRole('button', { name: '保存并同步', exact: true }).click();
   await page.getByText(/已保存并同步指令文件/).waitFor();
+  // 全部端已同步且无修改：同步按钮隐藏
+  assert.equal(await page.getByRole('button', { name: /同步/ }).count(), 0, '已全部同步时不应显示同步按钮');
   assert.equal(await page.getByText(/同步时将拆分为独立文件写入/).count(), 0, '同步后软链应已拆分为独立文件');
 
   // 3. 切换本机诊断，验证只读告警与单 Harness 下拉框切换；本机导入已移除
   await page.getByRole('tab', { name: '本机诊断' }).click();
+  // 切换不自动扫描，需手动点击「开始扫描」
+  await page.getByText(/尚未扫描/).waitFor();
+  assert.equal(await page.locator('.ap-doctor-card').count(), 0);
+  await page.screenshot({ path: 'artifacts/packages-doctor-idle.png', clip: { x: 0, y: 0, width: 1360, height: 360 } });
+  await page.getByRole('button', { name: '开始扫描' }).click();
   await page.getByText(/检测到旧版目录/).waitFor();
   await page.locator('.ap-doctor-card').getByText('codegraph').waitFor();
   assert.equal(await page.locator('.ap-doctor-card').count(), 1, '本机诊断一次应仅展示一个 Harness 卡片');
@@ -443,6 +470,41 @@ try {
   const instrOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(instrOverflow <= 2, `移动端全局指令页出现横向溢出：${instrOverflow}px`);
   await page.screenshot({ path: 'artifacts/packages-instructions-mobile.png', fullPage: true });
+  // 展开的菜单在窄屏下也不能撑出横向滚动
+  for (const name of ['从文件导入 ▾']) {
+    await page.getByRole('button', { name }).click();
+    await page.getByRole('menu').waitFor();
+    const menuBox = await page.getByRole('menu').boundingBox();
+    assert.ok(menuBox.x >= 0 && menuBox.x + menuBox.width <= 390, `移动端菜单超出视口：${JSON.stringify(menuBox)}`);
+    await page.keyboard.press('Escape');
+    await page.mouse.click(5, 5);
+  }
+  // 与设置面板实际宽度（约 585px）一致的截图
+  await page.setViewportSize({ width: 585, height: 1000 });
+  await page.screenshot({ path: 'artifacts/packages-instructions-panel.png', fullPage: true });
+  // 面板宽度下的编辑态：长公共内容（编辑器随内容增高并封顶）、未保存页头与展开的导入菜单
+  const longShared = Array.from({ length: 90 }, (_, i) => `- 第 ${i + 1} 条规则`).join('\n');
+  await page.locator('#ap-instr-shared').fill(longShared);
+  await page.getByText('未保存修改').waitFor();
+  // 未保存时标题与「还原 / 仅保存 / 保存并同步」保持同一行
+  const instrTitleBox = await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).boundingBox();
+  const saveSyncBox = await page.getByRole('button', { name: '保存并同步', exact: true }).boundingBox();
+  assert.ok(Math.abs(instrTitleBox.y + instrTitleBox.height / 2 - (saveSyncBox.y + saveSyncBox.height / 2)) < 6, '面板宽度下操作按钮不应换行到标题下方');
+  const editorHeight = (await page.locator('#ap-instr-shared').boundingBox()).height;
+  assert.ok(editorHeight > 300 && editorHeight <= 1000 * 0.6 + 2, `长内容编辑器高度异常：${editorHeight}`);
+  await page.getByRole('button', { name: '从文件导入 ▾' }).click();
+  await page.getByRole('menu').waitFor();
+  await page.screenshot({ path: 'artifacts/packages-instructions-panel-dirty.png' });
+  await page.keyboard.press('Escape');
+  await page.mouse.click(5, 5);
+  // 面板宽度下包清单的 Tab 与类型筛选、搜索框保持同一行
+  await page.getByRole('tab', { name: /包清单/ }).click();
+  const tabsBox = await page.locator('.ap-tablist').boundingBox();
+  const filtersBox = await page.locator('.ap-filters').boundingBox();
+  assert.ok(Math.abs(tabsBox.y + tabsBox.height / 2 - (filtersBox.y + filtersBox.height / 2)) < 4, '面板宽度下筛选区不应换行');
+  await page.screenshot({ path: 'artifacts/packages-panel.png', clip: { x: 0, y: 0, width: 585, height: 520 } });
+  await page.getByRole('tab', { name: '全局指令' }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('tab', { name: /包清单/ }).click();
   await page.getByText('Firecrawl Skills').waitFor();
   // 验证包清单筛选自定义下拉框可展开与筛选

@@ -3,7 +3,7 @@
 ## 挂载与整体风格
 
 - 使用 DSH 正式设置分类插槽 `settings.section`（`id: 'dsh-agent-packages'`，`order: 28`，标签 `Skills & MCP`），紧邻 `Harness`（25）与 `Hindsight`（30）；服务端关闭自动配置页（`settings.configure({ auto: false })`），避免重复入口。
-- 全面复用 DSH 主题变量（`--dsw-alias-border-l2`、`--dsw-alias-label-primary`、`--dsw-alias-label-secondary`、`--dsw-alias-bg-layer-1`、`--dsw-alias-state-active-primary`、`--dsw-alias-state-error-primary`、`--dsw-alias-state-success-primary`）与 `@deepseek-ai/dsh-client-ui-primitives` 的 `Button` 组件，天然适配明暗主题，充分使用设置页可用宽度。
+- 全面复用 DSH 主题变量（`--dsw-alias-border-l2`、`--dsw-alias-label-primary`、`--dsw-alias-label-secondary`、`--dsw-alias-bg-layer-1`、`--dsw-alias-state-active-primary`、`--dsw-alias-state-error-primary`、`--dsw-alias-state-success-primary`）与 `@deepseek-ai/dsh-client-ui-primitives` 的 `Button` 组件（全部统一为 `outline` 空心样式，不使用实心主按钮），天然适配明暗主题，充分使用设置页可用宽度。
 - 所有字段配有可访问 `<label>`；错误使用 `role="alert"`；操作结果使用 `role="status"`；按钮文案不折行；页面内下拉选择统一使用主题化自定义下拉框组件（含键盘导航、选中勾标与明暗主题适配）；窄屏（`<= 720px`）自动换行堆叠，不出现横向溢出。
 
 ## 信息架构
@@ -16,8 +16,8 @@
    - 每条记录以清晰的行卡呈现：包名、简洁类型标签、版本徽章（优先展示实测已装版本，多端版本不一致时并列提示，有新版时直接展示 `当前 → 最新`，已检查且无更新时标注 `最新`）、仓库链接（包 ID 仅在与名称不同时展示）。
    - **状态驱动的卡片操作**：有待安装或失败目标端时主按钮为「安装 / 重试安装」；全部已装且有新版本时主按钮为「升级」；已全部装齐且无更新时不显示多余的主按钮。常规次按钮为「编辑」与「更多 ▾」菜单，菜单内收拢单包「检查更新」「重新同步」「预览变更」，并将破坏性动作清晰区分为「仅从各端卸载」「仅从清单移除」「卸载并移除」。
    - **各端状态与版本芯片**：仅展示已启用目标端及存在残留状态的端（不堆砌无关的「未启用」芯片），已安装的端直接展示其实际已装版本号（或短 Commit），插件类包支持从各 Harness 本机记录实时读回版本。
-   - **全局指令（Instructions）**：统一维护 4 个 Harness 的全局指令文件（Codex `~/.codex/AGENTS.md`、Claude Code `<claudeConfigDir>/CLAUDE.md`、Antigravity `~/.gemini/AGENTS.md`、DSH 原生 `~/.dsh/AGENTS.md`）。页面纵向分为三块：顶部总览卡展示 4 端实时状态芯片（点击切换下方聚焦端）及「仅保存」「预览变更」「保存并同步全部」操作；中段维护跨端共享的「公共内容」，支持从任一现有文件一键导入（自动跳过外部工具标记块）；下段用自定义下拉框聚焦单个 Harness，管理其启用开关、独立「私有内容」、软链/外部块提示及「最终写入预览（公共 + 私有 + 自动保留的外部标记块）」，并支持单端预览与同步。
-   - **本机诊断（Doctor）**：只读扫描 4 个 Harness 本机现有 Skills、已装插件和 MCP 配置，列出已纳管、未纳管与异常项。全局诊断提示固定展示在上方；Harness 详情区改用下拉框切换，一次聚焦展示单个 Harness 的统计摘要、目录路径（含指令文件路径）、MCP Server 与已装插件，选项内附各端数量摘要，避免窄面板下多列挤压断行。不提供本机导入，包只能通过「添加包」进入清单。
+   - **全局指令（Instructions）**：统一维护 4 个 Harness 的全局指令文件（Codex `~/.codex/AGENTS.md`、Claude Code `<claudeConfigDir>/CLAUDE.md`、Antigravity `~/.gemini/AGENTS.md`、DSH 原生 `~/.dsh/AGENTS.md`）。页面只保留一个 Harness 选择入口：顶部为标题行（不套卡片），标题与操作按钮同一行、按钮靠右：有未保存修改时依次为「还原」「仅保存」「保存并同步」；无修改但有端未同步时只显示「同步」；无修改且全部已同步时不显示任何按钮，不单独提供 Dry-Run 预览（以私有内容卡内的「最终写入预览」代替）；「公共内容」卡维护跨端共享内容，导入来源收进「从文件导入 ▾」菜单（未创建或失效软链的端置灰，文件全文原样导入）；「私有内容」卡标题行右侧的紧凑自定义下拉框（选项附文件名与同步状态）是唯一的 Harness 切换方式，不设单端操作菜单，其下依次为目标文件路径、软链提示、私有内容编辑器，以及默认折叠的「最终写入预览（公共 + 私有）」。不提供按端停用：所有端都参与同步，历史上停用过的端在下次保存时恢复启用。
+   - **本机诊断（Doctor）**：切换到该视图不自动扫描，由用户点击「开始扫描 / 重新扫描」触发，只读扫描 4 个 Harness 本机现有 Skills、已装插件和 MCP 配置，列出已纳管、未纳管与异常项。全局诊断提示固定展示在上方；Harness 详情区改用下拉框切换，一次聚焦展示单个 Harness 的统计摘要、目录路径（含指令文件路径）、MCP Server 与已装插件，选项内附各端数量摘要，避免窄面板下多列挤压断行。不提供本机导入，包只能通过「添加包」进入清单。
    - 清单、锁文件与指令目录路径收进页脚可折叠区，不干扰主列表浏览。
 3. **添加 / 编辑面板**
    - 添加新包时在列表顶部展开面板；编辑已有包时直接替换对应列表卡片原位展开，不再在下方重复展示该包的摘要卡片（若编辑期间被当前筛选条件排除，则自动回落至顶部保留编辑状态）。
@@ -34,5 +34,5 @@
 ## 设计边界
 
 - 所有对本机 `~/.codex/config.toml`、`~/.claude.json`、`~/.gemini/config/mcp_config.json` 的写入均采用局部合并与原子替换，绝不覆盖无关配置，也绝不删除非受管条目。
-- 同步全局指令文件（`AGENTS.md` / `CLAUDE.md`）时，自动保留外部工具注入的独立标记块（如 `<!-- CODEGRAPH_START --> ... <!-- CODEGRAPH_END -->`）；软链目标采用原子替换拆分为独立文件写入，绝不写穿覆盖原链接目标；公共与私有内容均为空时跳过写入以防误清空现有文件。
+- 同步全局指令文件（`AGENTS.md` / `CLAUDE.md`）时，文件内容严格等于「公共 + 私有」，不再识别或自动保留外部工具注入的标记块（如 `<!-- CODEGRAPH_START --> ... <!-- CODEGRAPH_END -->`），需要保留的内容由用户写进公共或私有内容；软链目标采用原子替换拆分为独立文件写入，绝不写穿覆盖原链接目标；公共与私有内容均为空时跳过写入以防误清空现有文件。
 - 浏览器与本地后台交互仅限本机回环地址，写操作强制校验会话令牌 `x-agent-pkg-key` 且串行排队。

@@ -673,11 +673,8 @@ export class PackageManagerService {
         }
         const label = HARNESS_META[harnessId].label;
         const targetLabel = target === 'shared' ? '公共内容' : `${label} 私有内容`;
-        const strippedNote = imported.strippedBlocks.length
-          ? `（已跳过外部标记块 ${imported.strippedBlocks.join('、')}，同步时会自动保留）`
-          : '';
         return {
-          message: `已从 ${label}（${HARNESS_META[harnessId].instructionsFileName}）导入到${targetLabel}${strippedNote}`,
+          message: `已从 ${label}（${HARNESS_META[harnessId].instructionsFileName}）导入到${targetLabel}`,
           target,
           ...imported,
           ...(nextState ? { state: nextState } : {}),

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { HARNESS_IDS, HARNESS_META } from './constants.mjs';
-import { composeInstructionContent, extractExternalBlocks, normalizeLineEndings } from './shared.mjs';
+import { composeInstructionContent, normalizeLineEndings } from './shared.mjs';
 import { isPlainObject, writeFileAtomic } from './store.mjs';
 
 function sha256(text) {
@@ -56,7 +56,6 @@ export async function inspectTargetInstructionFile(targetFile) {
         symlinkTarget: '',
         brokenSymlink: false,
         rawContent: '',
-        externalBlocks: [],
         readError: '',
       };
     }
@@ -66,7 +65,6 @@ export async function inspectTargetInstructionFile(targetFile) {
       symlinkTarget: '',
       brokenSymlink: false,
       rawContent: '',
-      externalBlocks: [],
       readError: error.message,
     };
   }
@@ -84,14 +82,12 @@ export async function inspectTargetInstructionFile(targetFile) {
 
   try {
     const rawContent = normalizeLineEndings(await readFile(targetFile, 'utf8'));
-    const { blocks } = extractExternalBlocks(rawContent);
     return {
       exists: true,
       isSymlink,
       symlinkTarget,
       brokenSymlink: false,
       rawContent,
-      externalBlocks: blocks,
       readError: '',
     };
   } catch (error) {
@@ -102,7 +98,6 @@ export async function inspectTargetInstructionFile(targetFile) {
         symlinkTarget,
         brokenSymlink: true,
         rawContent: '',
-        externalBlocks: [],
         readError: '',
       };
     }
@@ -112,7 +107,6 @@ export async function inspectTargetInstructionFile(targetFile) {
       symlinkTarget,
       brokenSymlink: false,
       rawContent: '',
-      externalBlocks: [],
       readError: error.message,
     };
   }
@@ -259,7 +253,6 @@ export async function buildInstructionsState({ store, harnessPaths }) {
       ? composeInstructionContent({
           shared: stored.shared,
           privateContent,
-          externalBlocks: fileInfo.externalBlocks,
         })
       : '';
     const status = computeStatus({
@@ -292,7 +285,6 @@ export async function buildInstructionsState({ store, harnessPaths }) {
       isSymlink: fileInfo.isSymlink,
       symlinkTarget: fileInfo.symlinkTarget,
       brokenSymlink: fileInfo.brokenSymlink,
-      externalBlocks: fileInfo.externalBlocks,
       currentLength: fileInfo.rawContent.length,
       composedContent,
       hasSourceContent,
@@ -375,10 +367,7 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
     const composedContent = composeInstructionContent({
       shared: effective.shared,
       privateContent: entry.privateContent,
-      externalBlocks: fileInfo.externalBlocks,
     });
-    const preservedIds = fileInfo.externalBlocks.map(b => b.id);
-    const preservedNote = preservedIds.length ? `；保留外部标记块：${preservedIds.join('、')}` : '';
 
     if (fileInfo.isSymlink) {
       warnings.push(
@@ -393,7 +382,7 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
         harness: harnessId,
         action: 'sync',
         status: dryRun ? 'preview' : 'ok',
-        detail: `已是最新，无需写入（${targetFile}）${preservedNote}`,
+        detail: `已是最新，无需写入（${targetFile}）`,
       });
       continue;
     }
@@ -410,7 +399,6 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
       `内容组成：${[
         effective.shared.trim() ? '公共内容' : '',
         entry.privateContent.trim() ? '该端私有内容' : '',
-        preservedIds.length ? `外部块(${preservedIds.join(', ')})` : '',
       ].filter(Boolean).join(' + ')}`,
       `行数变化：${prevLineCount} 行 → ${lineCount} 行（${Buffer.byteLength(composedContent, 'utf8')} 字节）`,
     ];
@@ -420,7 +408,7 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
         harness: harnessId,
         action: 'sync',
         status: 'preview',
-        detail: `将${actionVerb}（${HARNESS_META[harnessId].instructionsFileName}）${preservedNote}`,
+        detail: `将${actionVerb}（${HARNESS_META[harnessId].instructionsFileName}）`,
         output: summaryLines.join('\n'),
         warnings,
       });
@@ -440,7 +428,7 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
         harness: harnessId,
         action: 'sync',
         status: 'ok',
-        detail: `已${actionVerb}（${HARNESS_META[harnessId].instructionsFileName}）${preservedNote}`,
+        detail: `已${actionVerb}（${HARNESS_META[harnessId].instructionsFileName}）`,
         output: summaryLines.join('\n'),
         warnings,
       });
@@ -477,13 +465,11 @@ export async function importInstructionFromHarness({ harnessId, harnessPaths }) 
   if (!fileInfo.exists) {
     throw new Error(`目标文件不存在：${targetFile}`);
   }
-  const { body, blocks } = extractExternalBlocks(fileInfo.rawContent);
   return {
     harness: harnessId,
     sourceFile: targetFile,
     isSymlink: fileInfo.isSymlink,
     symlinkTarget: fileInfo.symlinkTarget,
-    content: body,
-    strippedBlocks: blocks.map(b => b.id),
+    content: fileInfo.rawContent,
   };
 }

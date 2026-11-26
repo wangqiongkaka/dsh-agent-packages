@@ -13,7 +13,7 @@
   4. `installer`：针对自带 CLI 与多端安装器生命周期的复合项目（如 CodeGraph），支持配置每次操作仅执行一次的全局 CLI 命令（`install` / `upgrade` / `uninstall` / `version` 版本检测）以及各 Harness 的分端接入与卸载命令；全部端卸载完成后才执行全局卸载命令。
 - **GitHub 仓库解析与 AI 深度分析**：默认通过静态规则快速识别仓库类型（区分项目自用 `.claude/skills` 与对外分发的 Skills）、最新 Release / Commit、Skills 列表、插件清单及其 Hooks、npm/Python 包与 CLI 安装器命令；也支持在顶部「解析设置」中全局指定 Codex / Claude Code / Antigravity 及模型，点击「解析仓库」时浅克隆仓库到隔离临时目录进行只读深度分析，为复合型仓库生成各端安装、升级、卸载与版本检测草稿（仅回填供审阅，绝不自动执行）。
 - **只通过添加进入清单**：粘贴 GitHub 地址解析后添加。添加时可以重命名（包 ID 留空时按名称生成，与已有包冲突时提示重命名）；保存前按包类型和插件清单检查各 Harness 是否支持，不支持的端显示原因，勾选后禁止保存（为该端填写自定义安装命令后可装）；同一来源再次添加只更新名称与目标端（锁定版本不变，版本变化走升级），不重复安装。
-- **全局指令维护（AGENTS.md / CLAUDE.md）**：在 `<DSH_HOME>/dsh-agent-packages/instructions/` 下分别维护跨 Harness 共享的「公共内容（`shared.md`）」与各端独立的「私有内容（`private/<harness>.md`）」，合并后写入 Codex（`~/.codex/AGENTS.md`）、Claude Code（`<claudeConfigDir>/CLAUDE.md`）、Antigravity（`~/.gemini/AGENTS.md`）与 DSH 原生（`~/.dsh/AGENTS.md`）。支持从本机现有文件一键导入、实时预览最终合并内容、Dry-Run 变更预览与分端/全量同步；同步时自动保留外部工具注入的独立标记块（如 `<!-- CODEGRAPH_START --> ... <!-- CODEGRAPH_END -->`），遇到软链目标自动拆分为独立文件原子写入且不改动原链接目标。
+- **全局指令维护（AGENTS.md / CLAUDE.md）**：在 `<DSH_HOME>/dsh-agent-packages/instructions/` 下分别维护跨 Harness 共享的「公共内容（`shared.md`）」与各端独立的「私有内容（`private/<harness>.md`）」，合并后写入 Codex（`~/.codex/AGENTS.md`）、Claude Code（`<claudeConfigDir>/CLAUDE.md`）、Antigravity（`~/.gemini/AGENTS.md`）与 DSH 原生（`~/.dsh/AGENTS.md`）。支持从本机现有文件原样导入、实时预览最终合并内容、Dry-Run 变更预览与全量同步；写入内容严格等于「公共 + 私有」，不再自动保留外部工具注入的标记块（如 CodeGraph 的 `<!-- CODEGRAPH_START -->` 块），遇到软链目标自动拆分为独立文件原子写入且不改动原链接目标。
 - **统一版本检查与批量同步**：一键查更新、一键升级、支持 Dry-Run 预览变更，以及只读扫描本机现有 Skills / 插件 / MCP 状态做诊断（不提供本机导入）。
 - **DSH 设置管理页**：挂载在「设置 → Skills & MCP」，支持桌面端与窄屏视图。
 
