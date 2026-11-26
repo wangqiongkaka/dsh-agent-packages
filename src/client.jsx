@@ -68,6 +68,7 @@ function emptyDraft() {
       url: '',
       envRefsText: '',
     },
+    plugin: { name: '', marketplace: '' },
     commands: {},
   };
 }
@@ -95,6 +96,7 @@ function packageToDraft(pkg) {
       url: pkg.mcp?.url || '',
       envRefsText: Array.isArray(pkg.mcp?.envRefs) ? pkg.mcp.envRefs.join(', ') : '',
     },
+    plugin: { name: pkg.plugin?.name || '', marketplace: pkg.plugin?.marketplace || '' },
     commands: pkg.commands ? JSON.parse(JSON.stringify(pkg.commands)) : {},
   };
 }
@@ -134,6 +136,7 @@ function draftToPackage(draft) {
       url: draft.mcp.url.trim(),
       envRefs,
     },
+    plugin: { name: draft.plugin.name.trim(), marketplace: draft.plugin.marketplace.trim() },
     commands: draft.commands,
   };
 }
@@ -324,7 +327,7 @@ export function PackagesPage() {
     const needle = search.trim().toLowerCase();
     return list.filter(pkg => {
       if (filterKind === 'outdated' && !pkg.lock.updateAvailable) return false;
-      if (['skills-repo', 'mcp', 'installer'].includes(filterKind) && pkg.kind !== filterKind) return false;
+      if (['skills-repo', 'plugin', 'mcp', 'installer'].includes(filterKind) && pkg.kind !== filterKind) return false;
       if (!needle) return true;
       return (
         pkg.name.toLowerCase().includes(needle) ||
@@ -450,6 +453,7 @@ export function PackagesPage() {
                 >
                   <option value="all">全部类型</option>
                   <option value="skills-repo">Skills 仓库</option>
+                  <option value="plugin">插件（含 Hooks）</option>
                   <option value="mcp">MCP Server</option>
                   <option value="installer">自定义安装器</option>
                   <option value="outdated">仅看可升级</option>
@@ -502,6 +506,7 @@ export function PackagesPage() {
                       {evidence.discoveredSkills?.length ? <> · 发现 {evidence.discoveredSkills.length} 个 Skills（{evidence.discoveredSkills.slice(0, 6).join(', ')}{evidence.discoveredSkills.length > 6 ? '…' : ''}）</> : null}
                       {evidence.npmPackage ? <> · npm 包 <code>{evidence.npmPackage}</code></> : null}
                       {evidence.pythonPackage ? <> · Python 包 <code>{evidence.pythonPackage}</code></> : null}
+                      {evidence.plugin ? <> · 插件 <code>{evidence.plugin.name}@{evidence.plugin.marketplace}</code>{evidence.plugin.hookEvents?.length ? <>，安装时会注册 Hooks：{evidence.plugin.hookEvents.join('、')}</> : '，未声明 Hooks'}</> : null}
                     </div>
                   )}
 
@@ -539,6 +544,7 @@ export function PackagesPage() {
                         }}
                       >
                         <option value="skills-repo">Skills 仓库（自动同步 SKILL.md）</option>
+                        <option value="plugin">插件（含 Hooks，调用各端插件命令安装）</option>
                         <option value="mcp">MCP Server（声明式写入各端配置）</option>
                         <option value="installer">自定义安装器（按各端自有命令执行）</option>
                       </select>
@@ -631,6 +637,35 @@ export function PackagesPage() {
                           />
                         </div>
                       </div>
+                    </div>
+                  )}
+
+                  {draft.kind === 'plugin' && (
+                    <div className="ap-subbox">
+                      <div className="ap-subbox-title">插件安装配置（由各 Harness 插件命令安装，Hooks、命令与 Skills 一并注册和卸载）</div>
+                      <div className="ap-grid-2">
+                        <div className="ap-field">
+                          <label htmlFor="ap-plugin-name">插件名</label>
+                          <input
+                            id="ap-plugin-name"
+                            className="ap-input"
+                            placeholder="如 ponytail"
+                            value={draft.plugin.name}
+                            onChange={e => setDraft(prev => ({ ...prev, plugin: { ...prev.plugin, name: e.target.value } }))}
+                          />
+                        </div>
+                        <div className="ap-field">
+                          <label htmlFor="ap-plugin-marketplace">插件市场名</label>
+                          <input
+                            id="ap-plugin-marketplace"
+                            className="ap-input"
+                            placeholder="如 ponytail"
+                            value={draft.plugin.marketplace}
+                            onChange={e => setDraft(prev => ({ ...prev, plugin: { ...prev.plugin, marketplace: e.target.value } }))}
+                          />
+                        </div>
+                      </div>
+                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；DSH 原生暂无插件机制，会跳过。</p>
                     </div>
                   )}
 
@@ -978,6 +1013,7 @@ export function PackagesPage() {
                             <strong style={{ fontSize: 14 }}>{HARNESS_META[harnessId].label}</strong>
                             <span className="ap-badge">Skills: {info.skillsCount}</span>
                             <span className="ap-badge">MCP: {info.mcpCount}</span>
+                            {info.pluginsCount > 0 && <span className="ap-badge">插件: {info.pluginsCount}</span>}
                           </div>
                           <p className="ap-help">Skills 目录：<code>{info.skillsDir}</code></p>
                           {info.mcpFile && <p className="ap-help">MCP 文件：<code>{info.mcpFile}</code></p>}
@@ -988,6 +1024,18 @@ export function PackagesPage() {
                                   <span><code>{server.serverName}</code>（{server.transport}）</span>
                                   <span className={`ap-badge ${server.managedBy ? 'ap-badge-ok' : ''}`}>
                                     {server.managedBy ? `受管:${server.managedBy}` : '未纳管'}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {info.plugins?.length > 0 && (
+                            <ul className="ap-mini-list">
+                              {info.plugins.map(plugin => (
+                                <li key={`${plugin.name}@${plugin.marketplace}`}>
+                                  <span><code>{plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name}</code>{plugin.version ? `（${plugin.version}）` : ''}</span>
+                                  <span className={`ap-badge ${plugin.managedBy ? 'ap-badge-ok' : ''}`}>
+                                    {plugin.managedBy ? `受管:${plugin.managedBy}` : '未纳管'}
                                   </span>
                                 </li>
                               ))}

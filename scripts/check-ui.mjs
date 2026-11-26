@@ -12,6 +12,9 @@ import { PackageManagerService } from '../src/service.mjs';
 import { apiHandler, ENDPOINT } from '../src/api.mjs';
 
 const execFileAsync = promisify(execFile);
+// 验收只用临时目录，避免经环境变量读到本机真实的 Claude / Codex 配置
+delete process.env.CLAUDE_CONFIG_DIR;
+delete process.env.CODEX_HOME;
 
 async function makeTempSkillsRepo(base) {
   const dir = join(base, 'firecrawl-skills-upstream');

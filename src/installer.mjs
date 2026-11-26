@@ -11,6 +11,8 @@ import {
   upsertCodexMcpServer,
   upsertJsonMcpServer,
 } from './config-editors.mjs';
+import { readInstalledPlugins } from './scanner.mjs';
+import { parseGitHubSlug } from './store.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -257,6 +259,79 @@ async function installMcpToHarness(pkg, harnessId, harnessPaths, vars, prevHarne
   };
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+// 插件交给各 Harness 自己的插件 CLI 安装：hooks、命令、Skills 由 Harness 注册与清理，本插件不直接改写 hooks 配置。
+// 返回 { command, warnings }；该 Harness 无插件机制时返回 null。
+export function buildPluginCommand(pkg, harnessId, action, installed = {}) {
+  const { name, marketplace } = pkg.plugin;
+  const id = `${name}@${marketplace}`;
+  const gh = parseGitHubSlug(pkg.repo);
+  const source = gh ? gh.slug : pkg.repo;
+  const marketplaceKnown = Object.hasOwn(installed[harnessId]?.marketplaces ?? {}, marketplace);
+  if (action !== 'uninstall' && !source) throw new Error('插件类型需要填写 GitHub 仓库地址（插件市场来源）');
+
+  if (harnessId === 'claude-code') {
+    if (action === 'uninstall') return { command: `claude plugin uninstall ${id}`, warnings: [] };
+    const refresh = marketplaceKnown
+      ? `claude plugin marketplace update ${marketplace}`
+      : `claude plugin marketplace add ${shellQuote(source)}`;
+    const verb = action === 'upgrade' && marketplaceKnown ? 'update' : 'install';
+    return {
+      command: `${refresh} && claude plugin ${verb} ${id}`,
+      warnings: [
+        '插件 hooks 由 Claude Code 注册，重启 Claude Code 或新开会话后生效',
+        ...(pkg.ref ? [`Claude Code 插件市场跟随仓库默认分支，锁定的 ${pkg.ref} 不会作用于安装版本`] : []),
+      ],
+    };
+  }
+  if (harnessId === 'codex') {
+    if (action === 'uninstall') return { command: `codex plugin remove ${id}`, warnings: [] };
+    const refresh = marketplaceKnown
+      ? `codex plugin marketplace upgrade ${marketplace}`
+      : `codex plugin marketplace add ${shellQuote(source)}${pkg.ref ? ` --ref ${shellQuote(pkg.ref)}` : ''}`;
+    return {
+      command: `${refresh} && codex plugin add ${id}`,
+      warnings: ['插件 hooks 需在 Codex 中打开 /hooks 审核并信任后才会运行，新建会话后生效'],
+    };
+  }
+  if (harnessId === 'antigravity') {
+    if (action === 'uninstall') return { command: `agy plugin uninstall ${name}`, warnings: [] };
+    const target = shellQuote(gh ? gh.url : pkg.repo);
+    const alreadyInstalled = (installed.antigravity?.plugins ?? []).some(p => p.name === name);
+    return {
+      command: alreadyInstalled ? `agy plugin uninstall ${name} && agy plugin install ${target}` : `agy plugin install ${target}`,
+      warnings: pkg.ref ? [`Antigravity 从仓库默认分支安装插件，锁定的 ${pkg.ref} 不会作用于安装版本`] : [],
+    };
+  }
+  return null;
+}
+
+async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, options) {
+  const installed = await readInstalledPlugins(harnessPaths);
+  const built = buildPluginCommand(pkg, harnessId, action, installed);
+  if (!built) {
+    return {
+      harness: harnessId,
+      action,
+      method: 'adapter',
+      status: 'skipped',
+      detail: `${HARNESS_META[harnessId]?.label ?? harnessId} 暂无插件机制，未安装；如只需其中的 Skills，可另建「Skills 仓库」类型的包`,
+      warnings: [],
+    };
+  }
+  const step = await runCustomCommand(pkg, harnessId, action, built.command, '', { ...options, repoSynced: false });
+  const result = { ...step, method: 'adapter', warnings: built.warnings };
+  if (!options.dryRun && action !== 'uninstall') {
+    const after = await readInstalledPlugins(harnessPaths);
+    const match = (after[harnessId]?.plugins ?? []).find(p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace));
+    if (match?.version) result.installedVersion = match.version;
+  }
+  return result;
+}
+
 async function runCustomCommand(pkg, harnessId, action, commandTemplate, repoDir, options) {
   const vars = templateVars(pkg, harnessId, repoDir);
   const rendered = interpolateTemplate(commandTemplate, vars).trim();
@@ -337,6 +412,8 @@ export async function applyPackageAction({
         let step;
         if (customUninstall) {
           step = await runCustomCommand(pkg, harnessId, 'uninstall', customUninstall, repoDir, { dryRun, runShell, rootDir, repoSynced: false });
+        } else if (pkg.kind === 'plugin') {
+          step = await applyPluginToHarness(pkg, harnessId, 'uninstall', harnessPaths, { dryRun, runShell, rootDir });
         } else if (pkg.kind === 'skills-repo') {
           const paths = Array.isArray(prev.managedPaths) ? prev.managedPaths : [];
           let removed = 0;
@@ -445,6 +522,8 @@ export async function applyPackageAction({
       let step;
       if (customCmd) {
         step = await runCustomCommand(pkg, harnessId, action, customCmd, repoDir, { dryRun, runShell, rootDir, repoSynced });
+      } else if (pkg.kind === 'plugin') {
+        step = await applyPluginToHarness(pkg, harnessId, action, harnessPaths, { dryRun, runShell, rootDir });
       } else if (pkg.kind === 'skills-repo') {
         step = await installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, prev, { dryRun, action });
       } else if (pkg.kind === 'mcp') {
@@ -466,7 +545,7 @@ export async function applyPackageAction({
         nextLock.harnesses[harnessId] = {
           status: 'installed',
           method: step.method,
-          installedVersion: nextLock.resolvedVersion || '',
+          installedVersion: step.installedVersion || nextLock.resolvedVersion || '',
           installedCommit: nextLock.resolvedCommit || '',
           installedAt: new Date().toISOString(),
           managedPaths: step.managedPaths ?? prev.managedPaths ?? [],

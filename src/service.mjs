@@ -14,6 +14,7 @@ export class PackageManagerService {
       homeDir: options.homeDir,
       dshHome: options.dshHome,
       codexHome: options.codexHome,
+      claudeConfigDir: options.claudeConfigDir,
     });
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.execImpl = options.execImpl ?? defaultExecFile;

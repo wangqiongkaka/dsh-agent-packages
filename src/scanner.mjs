@@ -51,6 +51,77 @@ async function readAgentsSkillLock(lockPath) {
   }
 }
 
+async function readJsonQuiet(filePath) {
+  try { return JSON.parse(await readFile(filePath, 'utf8')); } catch { return null; }
+}
+
+async function readTextQuiet(filePath) {
+  try { return await readFile(filePath, 'utf8'); } catch { return ''; }
+}
+
+function repoFromMarketplaceSource(source) {
+  if (!source) return '';
+  if (typeof source === 'string') return normalizeRepoUrl(source);
+  return normalizeRepoUrl(source.repo || source.url || '');
+}
+
+// 只读文件识别各 Harness 已装插件，不调用任何 CLI。
+// 返回 { [harnessId]: { marketplaces: { name: repo }, plugins: [{ name, marketplace, version, repo }] } }
+export async function readInstalledPlugins(harnessPaths) {
+  const result = {};
+
+  const claudeDir = harnessPaths['claude-code']?.pluginsDir;
+  if (claudeDir) {
+    const installed = await readJsonQuiet(join(claudeDir, 'installed_plugins.json'));
+    const known = await readJsonQuiet(join(claudeDir, 'known_marketplaces.json')) ?? {};
+    const marketplaces = {};
+    for (const [name, meta] of Object.entries(known)) marketplaces[name] = repoFromMarketplaceSource(meta?.source);
+    const plugins = Object.entries(installed?.plugins ?? {}).map(([key, entries]) => {
+      const [name, marketplace = ''] = key.split('@');
+      const entry = Array.isArray(entries) ? (entries.find(e => e?.scope === 'user') ?? entries[0]) : entries;
+      return { name, marketplace, version: entry?.version || '', repo: marketplaces[marketplace] || '' };
+    });
+    result['claude-code'] = { marketplaces, plugins };
+  }
+
+  const codexToml = harnessPaths.codex?.mcpFile ? await readTextQuiet(harnessPaths.codex.mcpFile) : '';
+  if (harnessPaths.codex) {
+    const marketplaces = {};
+    for (const m of codexToml.matchAll(/^\[marketplaces\.(?:"([^"]+)"|([A-Za-z0-9._-]+))\]\s*$([\s\S]*?)(?=^\[|(?![\s\S]))/gm)) {
+      const source = /^\s*source\s*=\s*"([^"]*)"/m.exec(m[3])?.[1] || '';
+      marketplaces[m[1] || m[2]] = /^(https?:|git@)/.test(source) ? normalizeRepoUrl(source) : '';
+    }
+    const plugins = [];
+    for (const m of codexToml.matchAll(/^\[plugins\."([^"@]+)@([^"]+)"\]/gm)) {
+      const [, name, marketplace] = m;
+      let version = '';
+      try {
+        const versions = await readdir(join(dirname(harnessPaths.codex.mcpFile), 'plugins', 'cache', marketplace, name));
+        version = versions.filter(v => !v.startsWith('.')).sort().pop() || '';
+      } catch { version = ''; }
+      plugins.push({ name, marketplace, version, repo: marketplaces[marketplace] || '' });
+    }
+    result.codex = { marketplaces, plugins };
+  }
+
+  const agyDir = harnessPaths.antigravity?.pluginsDir;
+  if (agyDir) {
+    const plugins = [];
+    let entries = [];
+    try { entries = await readdir(agyDir, { withFileTypes: true }); } catch { entries = []; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+      const dir = join(agyDir, entry.name);
+      const manifest = await readJsonQuiet(join(dir, '.claude-plugin', 'plugin.json')) ?? await readJsonQuiet(join(dir, 'plugin.json')) ?? {};
+      const gitUrl = /^\s*url\s*=\s*(\S+)/m.exec(await readTextQuiet(join(dir, '.git', 'config')))?.[1] || '';
+      plugins.push({ name: entry.name, marketplace: '', version: manifest.version || '', repo: gitUrl ? normalizeRepoUrl(gitUrl) : '' });
+    }
+    result.antigravity = { marketplaces: {}, plugins };
+  }
+
+  return result;
+}
+
 export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
   const managedSkillPaths = new Map();
   const managedMcpKeys = new Map();
@@ -70,6 +141,17 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       }
     }
   }
+
+  const managedPlugins = new Map();
+  for (const pkg of manifest.packages) {
+    if (pkg.kind !== 'plugin') continue;
+    for (const harnessId of pkg.targets) {
+      const marketplace = harnessId === 'antigravity' ? '' : pkg.plugin.marketplace;
+      managedPlugins.set(`${harnessId}:${pkg.plugin.name}@${marketplace}`, pkg.id);
+    }
+  }
+  const installedPlugins = await readInstalledPlugins(harnessPaths);
+  const unmanagedPluginGroups = new Map();
 
   const agentsSkillLock = await readAgentsSkillLock(harnessPaths.agentsSkillLockFile);
   const warnings = [];
@@ -148,7 +230,21 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       }
     }
 
+    const pluginList = (installedPlugins[harnessId]?.plugins ?? []).map(plugin => {
+      const managedBy = managedPlugins.get(`${harnessId}:${plugin.name}@${plugin.marketplace}`) || null;
+      if (!managedBy && plugin.repo) {
+        const key = `${plugin.repo}#${plugin.name}`;
+        const group = unmanagedPluginGroups.get(key) ?? { ...plugin, harnesses: new Set() };
+        if (!group.marketplace) group.marketplace = plugin.marketplace;
+        group.harnesses.add(harnessId);
+        unmanagedPluginGroups.set(key, group);
+      }
+      return { ...plugin, managedBy };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
     harnesses[harnessId] = {
+      pluginsCount: pluginList.length,
+      plugins: pluginList,
       skillsDir: paths.skillsDir,
       mcpFile: paths.mcpFile,
       skillsCount: enrichedSkills.length,
@@ -203,6 +299,27 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
         version: '',
         targets: [...group.harnesses],
         skills: { include: [...group.skills].sort(), mode: 'symlink' },
+      },
+    });
+  }
+
+  for (const group of unmanagedPluginGroups.values()) {
+    const id = slugifyId(group.name);
+    importCandidates.push({
+      candidateId: `plugin:${group.repo}#${group.name}`,
+      kind: 'plugin',
+      label: `${group.name}（插件${group.version ? ` ${group.version}` : ''}）`,
+      harnesses: [...group.harnesses],
+      draft: {
+        id,
+        name: group.name,
+        kind: 'plugin',
+        repo: group.repo,
+        description: '从本机已安装插件导入，安装与卸载交由各 Harness 插件命令处理（含 Hooks）',
+        ref: '',
+        version: group.version,
+        targets: [...group.harnesses],
+        plugin: { name: group.name, marketplace: group.marketplace || id },
       },
     });
   }

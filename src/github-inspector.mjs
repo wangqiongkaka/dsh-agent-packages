@@ -110,6 +110,66 @@ function parsePyprojectPackage(tomlText) {
   };
 }
 
+export const PLUGIN_MANIFEST_PATHS = [
+  '.claude-plugin/marketplace.json',
+  '.claude-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
+  '.agents/plugins/marketplace.json',
+];
+
+function hookRefs(manifest) {
+  const refs = manifest?.hooks;
+  if (typeof refs === 'string') return [refs];
+  if (Array.isArray(refs)) return refs.filter(item => typeof item === 'string');
+  return [];
+}
+
+// 插件清单里引用的 hooks 文件（相对仓库根目录），Claude Code 还会自动加载 hooks/hooks.json。
+export function pluginHookPaths(manifests = {}, treePaths = []) {
+  const paths = [
+    ...hookRefs(manifests['.claude-plugin/plugin.json']),
+    ...hookRefs(manifests['.codex-plugin/plugin.json']),
+  ].map(ref => ref.replace(/^\.\//, ''));
+  if (treePaths.includes('hooks/hooks.json')) paths.push('hooks/hooks.json');
+  return [...new Set(paths)].filter(path => treePaths.includes(path));
+}
+
+export function detectPlugin({ slug, manifests = {}, hookFiles = {} }) {
+  const claudeMarketplace = manifests['.claude-plugin/marketplace.json'];
+  const claudePlugin = manifests['.claude-plugin/plugin.json'];
+  const codexPlugin = manifests['.codex-plugin/plugin.json'];
+  const agentsMarketplace = manifests['.agents/plugins/marketplace.json'];
+  if (!claudeMarketplace && !claudePlugin && !codexPlugin && !agentsMarketplace) return null;
+
+  const listed = [...(claudeMarketplace?.plugins ?? []), ...(agentsMarketplace?.plugins ?? [])]
+    .map(item => item?.name)
+    .filter(name => typeof name === 'string' && name);
+  const name = slugifyId(claudePlugin?.name || codexPlugin?.name || listed[0] || slug.repo);
+  const marketplace = slugifyId(claudeMarketplace?.name || agentsMarketplace?.name || slug.repo);
+
+  const hookSources = [claudePlugin?.hooks, codexPlugin?.hooks].filter(h => h && typeof h === 'object' && !Array.isArray(h));
+  hookSources.push(...Object.values(hookFiles));
+  const hookEvents = new Set();
+  for (const source of hookSources) {
+    const events = source?.hooks && typeof source.hooks === 'object' ? source.hooks : source;
+    for (const [event, entries] of Object.entries(events ?? {})) {
+      if (Array.isArray(entries) && entries.length) hookEvents.add(event);
+    }
+  }
+
+  const harnesses = [];
+  if (codexPlugin || agentsMarketplace) harnesses.push('codex');
+  if (claudeMarketplace || claudePlugin) harnesses.push('claude-code', 'antigravity');
+  return {
+    name,
+    marketplace,
+    version: String(claudePlugin?.version || codexPlugin?.version || ''),
+    harnesses: HARNESS_IDS.filter(id => harnesses.includes(id)),
+    hookEvents: [...hookEvents],
+    listedPlugins: [...new Set(listed)],
+  };
+}
+
 export function inferPackageFromRepoMeta({
   slug,
   repoUrl,
@@ -120,7 +180,10 @@ export function inferPackageFromRepoMeta({
   packageJson = null,
   pyprojectToml = null,
   readme = '',
+  pluginManifests = {},
+  hookFiles = {},
 }) {
+  const plugin = detectPlugin({ slug, manifests: pluginManifests, hookFiles });
   const skillNames = [];
   for (const filePath of treePaths) {
     if (filePath === 'SKILL.md') {
@@ -152,7 +215,10 @@ export function inferPackageFromRepoMeta({
   const hasPerHarnessInstaller = Object.keys(extracted.perHarness).length > 0;
 
   let kind = 'installer';
-  if (skillNames.length > 0 && !hasNpmMcp && !hasPyMcp) {
+  if (plugin) {
+    // 插件仓库优先：安装时还要注册 hooks 等组件，只同步 SKILL.md 会漏掉它们
+    kind = 'plugin';
+  } else if (skillNames.length > 0 && !hasNpmMcp && !hasPyMcp) {
     kind = 'skills-repo';
   } else if (hasNpmMcp || hasPyMcp) {
     kind = 'mcp';
@@ -165,14 +231,17 @@ export function inferPackageFromRepoMeta({
   const releaseTag = latestRelease?.tag_name || '';
   const commitSha = latestCommit?.sha || '';
   const defaultBranch = repoInfo?.default_branch || 'main';
-  const version = (hasNpmMcp && npmVersion)
+  const version = plugin
+    ? (plugin.version || releaseTag.replace(/^v/, ''))
+    : (hasNpmMcp && npmVersion)
     ? npmVersion
     : (hasPyMcp && pyInfo.version)
       ? pyInfo.version
       : releaseTag.replace(/^v/, '');
 
   const commands = {};
-  for (const harnessId of HARNESS_IDS) {
+  // 插件类型由内置适配器调用各端插件命令；README 里零散的单行命令不完整，不带入草稿
+  for (const harnessId of plugin ? [] : HARNESS_IDS) {
     if (extracted.perHarness[harnessId]) {
       commands[harnessId] = { install: extracted.perHarness[harnessId] };
     }
@@ -207,9 +276,11 @@ export function inferPackageFromRepoMeta({
     };
   }
 
-  const targets = kind === 'mcp'
-    ? ['codex', 'claude-code', 'antigravity']
-    : ['codex', 'claude-code', 'antigravity', 'dsh'];
+  const targets = plugin
+    ? plugin.harnesses
+    : kind === 'mcp'
+      ? ['codex', 'claude-code', 'antigravity']
+      : ['codex', 'claude-code', 'antigravity', 'dsh'];
 
   return {
     draft: {
@@ -227,9 +298,11 @@ export function inferPackageFromRepoMeta({
         mode: 'symlink',
       },
       mcp,
+      ...(plugin ? { plugin: { name: plugin.name, marketplace: plugin.marketplace } } : {}),
       commands,
     },
     evidence: {
+      plugin,
       defaultBranch,
       latestRelease: releaseTag || null,
       latestCommit: commitSha || null,
@@ -278,6 +351,13 @@ export async function inspectGitHubRepo(rawRepoUrl, options = {}) {
     try { packageJson = JSON.parse(pkgText); } catch { packageJson = null; }
   }
 
+  const fetchJsonFiles = async paths => Object.fromEntries((await Promise.all(paths.map(async path => {
+    const text = await fetchText(`${rawBase}/${path}`, { fetchImpl });
+    try { return [path, JSON.parse(text)]; } catch { return null; }
+  }))).filter(Boolean));
+  const pluginManifests = await fetchJsonFiles(PLUGIN_MANIFEST_PATHS.filter(path => treePaths.includes(path)));
+  const hookFiles = await fetchJsonFiles(pluginHookPaths(pluginManifests, treePaths));
+
   return inferPackageFromRepoMeta({
     slug: parsed,
     repoUrl: parsed.url,
@@ -288,6 +368,8 @@ export async function inspectGitHubRepo(rawRepoUrl, options = {}) {
     packageJson,
     pyprojectToml,
     readme: readme || '',
+    pluginManifests,
+    hookFiles,
   });
 }
 

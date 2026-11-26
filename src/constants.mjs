@@ -6,6 +6,7 @@ export function resolveHarnessPaths(options = {}) {
   const home = resolve(options.homeDir || process.env.HOME || homedir());
   const dshHome = resolve(options.dshHome || process.env.DSH_HOME || join(home, '.dsh'));
   const codexHome = resolve(options.codexHome || process.env.CODEX_HOME || join(home, '.codex'));
+  const claudeConfigDir = resolve(options.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || join(home, '.claude'));
   return {
     home,
     dshHome,
@@ -20,6 +21,7 @@ export function resolveHarnessPaths(options = {}) {
       skillsDir: join(home, '.claude', 'skills'),
       mcpFile: join(home, '.claude.json'),
       mcpFormat: 'json-claude',
+      pluginsDir: join(claudeConfigDir, 'plugins'),
     },
     antigravity: {
       skillsDir: join(home, '.gemini', 'config', 'skills'),
@@ -27,6 +29,7 @@ export function resolveHarnessPaths(options = {}) {
       mcpFile: join(home, '.gemini', 'config', 'mcp_config.json'),
       legacyMcpFile: join(home, '.gemini', 'settings.json'),
       mcpFormat: 'json-antigravity',
+      pluginsDir: join(home, '.gemini', 'config', 'plugins'),
     },
     dsh: {
       skillsDir: join(dshHome, 'skills'),
