@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { HARNESS_IDS, HARNESS_META, resolveHarnessPaths } from './constants.mjs';
 import { unsupportedReason } from './shared.mjs';
 import { PackageStore, normalizePackage } from './store.mjs';
@@ -5,6 +6,7 @@ import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
 import { applyPackageAction, defaultExecFile, defaultRunShell } from './installer.mjs';
 import { scanLocalEnvironment } from './scanner.mjs';
 import { HttpError } from './http.mjs';
+import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
 function sameSource(a, b) {
   if (a.kind !== b.kind) return false;
@@ -27,6 +29,21 @@ export class PackageManagerService {
     this.execImpl = options.execImpl ?? defaultExecFile;
     this.runShell = options.runShell ?? defaultRunShell;
     this.githubToken = options.githubToken;
+    // Claude Code 启动命令（如 reclaude），可为取值函数以读到最新设置；空值回落到 claude
+    this.claudeCommand = options.claudeCommand ?? '';
+    this.explicitClaudeConfigDir = options.claudeConfigDir || process.env.CLAUDE_CONFIG_DIR || '';
+  }
+
+  // 每次操作读取最新的 Claude Code 命令；reclaude 时按其当前账号的配置目录识别插件，显式 CLAUDE_CONFIG_DIR 优先。
+  async currentHarnessPaths() {
+    const configured = typeof this.claudeCommand === 'function' ? this.claudeCommand() : this.claudeCommand;
+    const command = (typeof configured === 'string' && configured.trim()) || 'claude';
+    const claude = { ...this.harnessPaths['claude-code'], command };
+    if (!this.explicitClaudeConfigDir && await isReclaudeCommand(command)) {
+      const configDir = await reclaudeConfigDir(command, this.execImpl);
+      if (configDir) claude.pluginsDir = join(configDir, 'plugins');
+    }
+    return { ...this.harnessPaths, 'claude-code': claude };
   }
 
   async init() {
@@ -107,6 +124,9 @@ export class PackageManagerService {
       throw new HttpError(400, '缺少操作类型 type');
     }
 
+    let paths;
+    const currentPaths = async () => (paths ??= await this.currentHarnessPaths());
+
     switch (input.type) {
       case 'repo.inspect': {
         const inspected = await inspectGitHubRepo(input.repo, {
@@ -163,7 +183,7 @@ export class PackageManagerService {
             pkg: normalized,
             action: 'install',
             lockEntry: lock.packages[normalized.id],
-            harnessPaths: this.harnessPaths,
+            harnessPaths: await currentPaths(),
             reposDir: this.store.reposDir,
             rootDir: this.root,
             dryRun: Boolean(input.dryRun),
@@ -198,7 +218,7 @@ export class PackageManagerService {
             pkg,
             action: 'uninstall',
             lockEntry: lock.packages[pkg.id],
-            harnessPaths: this.harnessPaths,
+            harnessPaths: await currentPaths(),
             reposDir: this.store.reposDir,
             rootDir: this.root,
             dryRun: false,
@@ -231,7 +251,7 @@ export class PackageManagerService {
           action,
           harnesses: Array.isArray(input.harnesses) ? input.harnesses : undefined,
           lockEntry: lock.packages[pkg.id],
-          harnessPaths: this.harnessPaths,
+          harnessPaths: await currentPaths(),
           reposDir: this.store.reposDir,
           rootDir: this.root,
           dryRun,
@@ -276,7 +296,7 @@ export class PackageManagerService {
           action: 'upgrade',
           harnesses: Array.isArray(input.harnesses) ? input.harnesses : undefined,
           lockEntry: prevLock,
-          harnessPaths: this.harnessPaths,
+          harnessPaths: await currentPaths(),
           reposDir: this.store.reposDir,
           rootDir: this.root,
           dryRun,
@@ -352,7 +372,7 @@ export class PackageManagerService {
             pkg,
             action: 'install',
             lockEntry: lock.packages[pkg.id],
-            harnessPaths: this.harnessPaths,
+            harnessPaths: await currentPaths(),
             reposDir: this.store.reposDir,
             rootDir: this.root,
             dryRun,
@@ -397,7 +417,7 @@ export class PackageManagerService {
             pkg: updatedPkg,
             action: 'upgrade',
             lockEntry: prev,
-            harnessPaths: this.harnessPaths,
+            harnessPaths: await currentPaths(),
             reposDir: this.store.reposDir,
             rootDir: this.root,
             dryRun,
@@ -436,7 +456,7 @@ export class PackageManagerService {
           this.store.readLock(),
         ]);
         const report = await scanLocalEnvironment({
-          harnessPaths: this.harnessPaths,
+          harnessPaths: await currentPaths(),
           manifest,
           lock,
         });

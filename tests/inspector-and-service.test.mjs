@@ -438,3 +438,89 @@ test('插件端到端：添加时重命名与前置检查、幂等安装、读�
   assert.deepEqual(executed, ['codex plugin remove ponytail@ponytail', 'agy plugin uninstall ponytail']);
   assert.equal(removed.state.packages[0].harnessStatuses.codex.status, 'uninstalled');
 });
+
+test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已装，插件命令经 reclaude 执行', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-reclaude-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const homeDir = join(base, 'home');
+  const dataDir = join(base, 'rec-data');
+  const accountPlugins = join(dataDir, 'claude', 'accounts', '1001', 'config', 'plugins');
+  await mkdir(accountPlugins, { recursive: true });
+  await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({
+    version: 2,
+    plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '5.3.3' }] },
+  }));
+  await writeFile(join(accountPlugins, 'known_marketplaces.json'), JSON.stringify({
+    ponytail: { source: { source: 'github', repo: 'DietrichGebert/ponytail' } },
+  }));
+
+  const probes = [];
+  let probeFails = false;
+  const execImpl = async (file, args) => {
+    probes.push([file, ...args].join(' '));
+    if (file === 'reclaude' && args.join(' ') === 'status --json' && !probeFails) {
+      return { stdout: JSON.stringify({ global: { data_dir: dataDir }, claude: { current: { device_id: 1001 } } }), stderr: '' };
+    }
+    throw new Error(`unexpected exec ${file}`);
+  };
+  const executed = [];
+  const runShell = async command => { executed.push(command); return { stdout: 'ok', stderr: '' }; };
+  let claudeCommand = 'reclaude';
+  const service = new PackageManagerService({ root: join(base, 'root'), homeDir, dshHome: join(homeDir, '.dsh'), claudeCommand: () => claudeCommand, execImpl, runShell });
+  await service.init();
+
+  const ponytail = {
+    name: 'ponytail',
+    kind: 'plugin',
+    repo: 'https://github.com/DietrichGebert/ponytail',
+    targets: ['claude-code'],
+    plugin: { name: 'ponytail', marketplace: 'ponytail', harnesses: ['claude-code'] },
+  };
+  // 已装在 reclaude 账号目录：不再执行安装命令，默认 ~/.claude 不会多装一份
+  const saved = await service.action({ type: 'package.save', installNow: true, package: ponytail });
+  assert.deepEqual(executed, []);
+  assert.match(saved.steps[0].detail, /已安装 5\.3\.3，无需重复安装/);
+  assert.ok(probes.includes('reclaude status --json'));
+
+  const scan = await service.action({ type: 'local.scan' });
+  assert.equal(scan.report.harnesses['claude-code'].plugins.find(p => p.name === 'ponytail').managedBy, 'ponytail');
+
+  // 插件命令使用 reclaude，市场已在该账号登记时只刷新市场
+  await service.action({ type: 'package.upgrade', id: 'ponytail', harnesses: ['claude-code'] });
+  await service.action({ type: 'package.uninstall', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, [
+    'reclaude plugin marketplace update ponytail && reclaude plugin update ponytail@ponytail',
+    'reclaude plugin uninstall ponytail@ponytail',
+  ]);
+
+  // 账号目录未登记该插件市场时，经 reclaude 添加市场并安装
+  await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }));
+  await writeFile(join(accountPlugins, 'known_marketplaces.json'), '{}');
+  executed.length = 0;
+  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ["reclaude plugin marketplace add 'DietrichGebert/ponytail' && reclaude plugin install ponytail@ponytail"]);
+
+  // reclaude 状态探测失败：命令仍用 reclaude，已装判断保持默认配置目录（此处为空）
+  probeFails = true;
+  await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '5.3.3' }] } }));
+  executed.length = 0;
+  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ["reclaude plugin marketplace add 'DietrichGebert/ponytail' && reclaude plugin install ponytail@ponytail"]);
+  probeFails = false;
+
+  // 设置改回空值后回落到 claude 与默认配置目录（此处为空），按未安装执行 claude 命令
+  claudeCommand = '';
+  executed.length = 0;
+  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ["claude plugin marketplace add 'DietrichGebert/ponytail' && claude plugin install ponytail@ponytail"]);
+});
+
+test('读取 harness-provider 的 claudeCommand：缺少设置服务或读取出错时回落为空', async () => {
+  const { readHarnessClaudeCommand } = await import('../src/claude-command.mjs');
+  const settings = rows => () => ({ describe: () => rows });
+  assert.equal(readHarnessClaudeCommand(settings([{ ns: 'harness-plugin', value: { claudeCommand: ' reclaude ' } }])), 'reclaude');
+  assert.equal(readHarnessClaudeCommand(settings([{ ns: 'other', value: { claudeCommand: 'x' } }])), '');
+  assert.equal(readHarnessClaudeCommand(settings([{ ns: 'harness-plugin', value: { claudeCommand: 1 } }])), '');
+  assert.equal(readHarnessClaudeCommand(() => undefined), '');
+  assert.equal(readHarnessClaudeCommand(() => { throw new Error('no settings'); }), '');
+});

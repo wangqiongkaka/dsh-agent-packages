@@ -8,7 +8,7 @@
 - **支持 4 个 Harness 目标**：Codex（`~/.codex/skills`、`~/.codex/config.toml`）、Claude Code（`~/.claude/skills`、`~/.claude.json`）、Antigravity（`~/.gemini/config/skills`、`~/.gemini/config/mcp_config.json`）、DSH 原生（`~/.dsh/skills`）。
 - **四种包类型**：
   1. `skills-repo`：指定 GitHub 仓库与 `ref`（Tag/分支/Commit），自动检出并将发现的 `SKILL.md` 软链或复制到目标 Harness；卸载时仅清理受管路径。
-  2. `plugin`：插件式 Skills（如 ponytail），仓库带 `.claude-plugin/`、`.codex-plugin/` 或 `.agents/plugins/` 清单。安装、升级、卸载调用各 Harness 自己的插件命令（`claude plugin`、`codex plugin`、`agy plugin`），插件声明的 Hooks、命令与 Skills 由 Harness 一并注册和清理，本插件不直接改写 hooks 配置。插件已装在某端时，「安装」「全部同步」和重复添加都不会再次执行安装命令。Codex 需在 `/hooks` 中信任插件 Hooks 后生效；DSH 原生暂无插件机制，会跳过。
+  2. `plugin`：插件式 Skills（如 ponytail），仓库带 `.claude-plugin/`、`.codex-plugin/` 或 `.agents/plugins/` 清单。安装、升级、卸载调用各 Harness 自己的插件命令（`claude plugin`、`codex plugin`、`agy plugin`），Claude Code 端沿用 dsh-harness-provider 设置的 `claudeCommand`（如 `reclaude`）执行插件命令，并按 reclaude 当前账号的配置目录判断是否已安装。插件声明的 Hooks、命令与 Skills 由 Harness 一并注册和清理，本插件不直接改写 hooks 配置。插件已装在某端时，「安装」「全部同步」和重复添加都不会再次执行安装命令。Codex 需在 `/hooks` 中信任插件 Hooks 后生效；DSH 原生暂无插件机制，会跳过。
   3. `mcp`：关联 GitHub 仓库与锁定版本号，支持 `{{version}}` 模板变量，安全局部更新 Codex TOML（保留原注释与其他节）和 Claude / Antigravity JSON（原子写入、不覆盖运行时状态）。
   4. `installer`：针对自带安装器/插件生命周期的复合项目，按 Harness 配置各自的 `install` / `upgrade` / `uninstall` 命令统一调度。
 - **GitHub 仓库解析**：输入 `owner/repo` 或完整 URL 自动识别仓库类型、最新 Release / Commit、Skills 列表、插件清单及其安装时注册的 Hooks、npm/Python MCP 信息及 README 中的分端安装命令。
