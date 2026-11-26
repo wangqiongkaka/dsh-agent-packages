@@ -617,7 +617,6 @@ export function PackagesPage() {
                             <input
                               type="checkbox"
                               checked={checked}
-                              disabled={Boolean(reason) && !checked}
                               onChange={() => toggleTarget(harnessId)}
                             />
                             <span>{HARNESS_META[harnessId].label}</span>
@@ -628,7 +627,7 @@ export function PackagesPage() {
                     </div>
                     {blockedTargets.length > 0 && (
                       <p className="ap-field-error" role="alert">
-                        已勾选不支持的 Harness：{blockedTargets.map(([h]) => HARNESS_META[h].label).join('、')}，请取消勾选后再保存。
+                        已勾选不支持的 Harness：{blockedTargets.map(([h]) => HARNESS_META[h].label).join('、')}。请取消勾选，或为该端填写自定义安装命令后再保存。
                       </p>
                     )}
                   </div>
@@ -688,7 +687,7 @@ export function PackagesPage() {
                           />
                         </div>
                       </div>
-                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，不能勾选。</p>
+                      <p className="ap-help">Codex 安装后需在 /hooks 中信任插件 Hooks；Claude Code 需新开会话生效；Antigravity 是否运行插件 Hooks 未确认；DSH 原生暂无插件机制，不支持安装。</p>
                     </div>
                   )}
 

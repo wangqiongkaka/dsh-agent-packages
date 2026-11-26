@@ -401,10 +401,11 @@ test('插件端到端：添加时重命名与前置检查、幂等安装、读�
 
   // 幂等：同一插件换个名称再次添加，只更新原条目（可重命名），已装各端不重复执行任何命令
   executed.length = 0;
-  const again = await service.action({ type: 'package.save', installNow: true, package: { ...ponytail, name: 'Ponytail' } });
+  // 重复添加时解析到更新的版本：只采用新名称与目标端，原条目的锁定版本不被覆盖，升级仍走「升级」
+  const again = await service.action({ type: 'package.save', installNow: true, package: { ...ponytail, name: 'Ponytail', ref: 'v5.4.0', version: '5.4.0' } });
   assert.deepEqual(executed, []);
   assert.match(again.message, /已在清单中/);
-  assert.deepEqual(again.state.packages.map(p => [p.id, p.name]), [['lazy-dev', 'Ponytail']]);
+  assert.deepEqual(again.state.packages.map(p => [p.id, p.name, p.version, p.ref]), [['lazy-dev', 'Ponytail', '5.3.3', 'v5.3.3']]);
   assert.ok(again.steps.every(step => step.status === 'ok' && step.detail.includes('无需重复安装')));
   await service.action({ type: 'packages.syncAll' });
   assert.deepEqual(executed, []);

@@ -133,7 +133,11 @@ export class PackageManagerService {
             existingIndex = manifest.packages.findIndex(p => sameSource(p, probe));
           }
           const existing = existingIndex >= 0 ? manifest.packages[existingIndex] : undefined;
-          normalized = normalizePackage(existing ? { ...rawPkg, id: existing.id } : rawPkg, existing);
+          // 重复添加只采用新名称与目标端；锁定版本、自定义命令等沿用原条目，版本变化走「升级」
+          const next = !existing ? rawPkg
+            : originalId ? { ...rawPkg, id: existing.id }
+              : { ...existing, name: rawPkg.name || existing.name, targets: rawPkg.targets ?? existing.targets };
+          normalized = normalizePackage(next, existing);
         } catch (error) {
           throw new HttpError(400, error.message);
         }
@@ -143,7 +147,7 @@ export class PackageManagerService {
           .map(h => [h, unsupportedReason(normalized, h)])
           .filter(([, reason]) => reason);
         if (blocked.length) {
-          throw new HttpError(400, `前置检查未通过：${blocked.map(([h, reason]) => `${HARNESS_META[h].label}${reason}`).join('；')}。请取消勾选后再保存`);
+          throw new HttpError(400, `前置检查未通过：${blocked.map(([h, reason]) => `${HARNESS_META[h].label}${reason}`).join('；')}。请取消勾选，或为该端填写自定义安装命令后再保存`);
         }
         const reAdded = !originalId && existingIndex >= 0;
 
