@@ -444,7 +444,7 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已�
   t.after(() => rm(base, { recursive: true, force: true }));
   const homeDir = join(base, 'home');
   const dataDir = join(base, 'rec-data');
-  const accountPlugins = join(dataDir, 'claude', 'accounts', '57531', 'config', 'plugins');
+  const accountPlugins = join(dataDir, 'claude', 'accounts', '1001', 'config', 'plugins');
   await mkdir(accountPlugins, { recursive: true });
   await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({
     version: 2,
@@ -455,10 +455,11 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已�
   }));
 
   const probes = [];
+  let probeFails = false;
   const execImpl = async (file, args) => {
     probes.push([file, ...args].join(' '));
-    if (file === 'reclaude' && args.join(' ') === 'status --json') {
-      return { stdout: JSON.stringify({ global: { data_dir: dataDir }, claude: { current: { device_id: 57531 } } }), stderr: '' };
+    if (file === 'reclaude' && args.join(' ') === 'status --json' && !probeFails) {
+      return { stdout: JSON.stringify({ global: { data_dir: dataDir }, claude: { current: { device_id: 1001 } } }), stderr: '' };
     }
     throw new Error(`unexpected exec ${file}`);
   };
@@ -491,6 +492,21 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录判断已�
     'reclaude plugin marketplace update ponytail && reclaude plugin update ponytail@ponytail',
     'reclaude plugin uninstall ponytail@ponytail',
   ]);
+
+  // 账号目录未登记该插件市场时，经 reclaude 添加市场并安装
+  await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: {} }));
+  await writeFile(join(accountPlugins, 'known_marketplaces.json'), '{}');
+  executed.length = 0;
+  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ["reclaude plugin marketplace add 'DietrichGebert/ponytail' && reclaude plugin install ponytail@ponytail"]);
+
+  // reclaude 状态探测失败：命令仍用 reclaude，已装判断保持默认配置目录（此处为空）
+  probeFails = true;
+  await writeFile(join(accountPlugins, 'installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '5.3.3' }] } }));
+  executed.length = 0;
+  await service.action({ type: 'package.install', id: 'ponytail', harnesses: ['claude-code'] });
+  assert.deepEqual(executed, ["reclaude plugin marketplace add 'DietrichGebert/ponytail' && reclaude plugin install ponytail@ponytail"]);
+  probeFails = false;
 
   // 设置改回空值后回落到 claude 与默认配置目录（此处为空），按未安装执行 claude 命令
   claudeCommand = '';
