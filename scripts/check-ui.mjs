@@ -198,7 +198,7 @@ try {
     for (const grid of document.querySelectorAll('.ap-editor .ap-grid')) {
       const rows = new Map();
       for (const field of grid.children) {
-        const control = field.querySelector('input, select');
+        const control = field.querySelector('input, select, button[role="combobox"]');
         if (!control || !control.offsetHeight) continue;
         const row = Math.round(field.getBoundingClientRect().top);
         rows.set(row, [...(rows.get(row) || []), Math.round(control.getBoundingClientRect().top)]);
@@ -230,17 +230,37 @@ try {
   await page.getByRole('menuitem', { name: '卸载并移除' }).waitFor();
   await page.keyboard.press('Escape');
 
-  // 3. 切换本机诊断，验证只读告警；本机导入已移除
+  // 3. 切换本机诊断，验证只读告警与单 Harness 下拉框切换；本机导入已移除
   await page.getByRole('tab', { name: '本机诊断' }).click();
   await page.getByText(/检测到旧版目录/).waitFor();
   await page.getByText('codegraph').waitFor();
+  assert.equal(await page.locator('.ap-doctor-card').count(), 1, '本机诊断一次应仅展示一个 Harness 卡片');
+  assert.match(await page.locator('#ap-doctor-harness').innerText(), /Codex/);
   assert.equal(await page.getByRole('button', { name: '导入清单' }).count(), 0);
   await page.screenshot({ path: 'artifacts/packages-doctor.png', fullPage: true });
 
-  // 4. 窄屏移动端检查无横向溢出
+  // 通过自定义下拉框切换 Harness，验证单卡片内容同步更新
+  await page.locator('#ap-doctor-harness').click();
+  assert.equal(await page.getByRole('option').count(), 4, 'Harness 下拉框应列出全部 4 个端');
+  await page.getByRole('option', { name: /DSH 原生/ }).click();
+  assert.equal(await page.locator('.ap-doctor-card').count(), 1);
+  assert.match(await page.locator('#ap-doctor-harness').innerText(), /DSH 原生/);
+  assert.equal(await page.getByText('codegraph').count(), 0, '切换到 DSH 原生后不应再显示 Codex 的 MCP');
+  await page.getByText('该端暂无已配置的 MCP Server 或已装插件。').waitFor();
+
+  // 4. 窄屏移动端检查无横向溢出（涵盖本机诊断与包清单）
   await page.setViewportSize({ width: 390, height: 844 });
+  const doctorOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  assert.ok(doctorOverflow <= 2, `移动端本机诊断页出现横向溢出：${doctorOverflow}px`);
   await page.getByRole('tab', { name: /包清单/ }).click();
   await page.getByText('Firecrawl Skills').waitFor();
+  // 验证包清单筛选自定义下拉框可展开与筛选
+  await page.locator('#ap-filter-kind').click();
+  await page.getByRole('option', { name: 'MCP Server' }).click();
+  assert.equal(await page.locator('.ap-pkg-card').count(), 1, '按 MCP Server 筛选应只展示 1 个包');
+  await page.locator('#ap-filter-kind').click();
+  await page.getByRole('option', { name: '全部类型' }).click();
+  assert.equal(await page.locator('.ap-pkg-card').count(), 3, '切回全部类型应恢复全部包');
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   assert.ok(overflow <= 2, `移动端出现横向溢出：${overflow}px`);
   await page.screenshot({ path: 'artifacts/packages-mobile.png', fullPage: true });
