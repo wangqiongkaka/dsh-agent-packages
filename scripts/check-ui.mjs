@@ -165,11 +165,33 @@ try {
 
   // 1. 打开添加包 → 解析 GitHub 仓库 → 截图 → 保存并安装
   await page.getByRole('button', { name: '添加包' }).click();
-  await page.getByLabel(/^GitHub 地址/).fill('microsoft/playwright-mcp');
+  await page.locator('#ap-repo').fill('microsoft/playwright-mcp');
   await page.getByRole('button', { name: '解析仓库' }).click();
   await page.locator('.ap-evidence').waitFor();
-  assert.equal(await page.getByLabel('锁定版本号（供 {{version}} 替换）').inputValue(), '0.0.28');
+  assert.equal(await page.locator('#ap-version').inputValue(), '0.0.28');
+  // 折叠的「高级设置」摘要仍显示解析出的锁定版本
+  assert.match(await page.locator('.ap-advanced summary').innerText(), /0\.0\.28/);
   await page.screenshot({ path: 'artifacts/packages-editor.png', fullPage: true });
+
+  // 编辑面板同一行的输入框顶部对齐（宽屏与 DSH 设置页常见的约 560px 宽度各检查一次）
+  const misaligned = () => page.evaluate(() => {
+    const bad = [];
+    for (const grid of document.querySelectorAll('.ap-editor .ap-grid')) {
+      const rows = new Map();
+      for (const field of grid.children) {
+        const control = field.querySelector('input, select');
+        if (!control || !control.offsetHeight) continue;
+        const row = Math.round(field.getBoundingClientRect().top);
+        rows.set(row, [...(rows.get(row) || []), Math.round(control.getBoundingClientRect().top)]);
+      }
+      for (const tops of rows.values()) if (new Set(tops).size > 1) bad.push(tops);
+    }
+    return bad;
+  });
+  assert.deepEqual(await misaligned(), [], '宽屏编辑面板输入框未对齐');
+  const narrow = await page.addStyleTag({ content: '#app > div { max-width: 560px !important; }' });
+  assert.deepEqual(await misaligned(), [], '窄面板编辑面板输入框未对齐');
+  await narrow.evaluate(el => el.remove());
 
   await page.getByRole('button', { name: '保存并安装' }).click();
   await page.getByText('playwright-mcp').first().waitFor();
