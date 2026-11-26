@@ -1,5 +1,25 @@
+# --- 依赖 ---
 node_modules/
+
+# --- 构建与验收产物（npm run build / npm run test:ui 重新生成） ---
 lib/
 artifacts/
 *.tgz
+coverage/
+
+# --- 本地环境与密钥 ---
+.env
+.env.*
+!.env.example
+
+# --- 日志 ---
+*.log
+
+# --- 系统与编辑器 ---
 .DS_Store
+.vscode/
+.idea/
+
+# --- 本地工具缓存与索引 ---
+.cache/
+.codegraph/
