@@ -312,21 +312,23 @@ function findInstalledPlugin(installed, pkg, harnessId) {
   return (installed[harnessId]?.plugins ?? []).find(p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace));
 }
 
+// 幂等安装：插件已装在该端时“安装/全部同步”不重复执行任何命令（含自定义命令），更新走升级
+async function installedPluginStep(pkg, harnessId, harnessPaths, dryRun) {
+  const existing = findInstalledPlugin(await readInstalledPlugins(harnessPaths), pkg, harnessId);
+  if (!existing) return null;
+  return {
+    harness: harnessId,
+    action: 'install',
+    method: 'adapter',
+    status: dryRun ? 'preview' : 'ok',
+    detail: `已安装${existing.version ? ` ${existing.version}` : ''}，无需重复安装；如需更新请使用升级`,
+    installedVersion: existing.version || undefined,
+    warnings: [],
+  };
+}
+
 async function applyPluginToHarness(pkg, harnessId, action, harnessPaths, options) {
   const installed = await readInstalledPlugins(harnessPaths);
-  const existing = findInstalledPlugin(installed, pkg, harnessId);
-  if (action === 'install' && existing) {
-    // 已安装时“安装/全部同步”不重复执行插件命令，更新走升级
-    return {
-      harness: harnessId,
-      action,
-      method: 'adapter',
-      status: options.dryRun ? 'preview' : 'ok',
-      detail: `已安装${existing.version ? ` ${existing.version}` : ''}，无需重复安装；如需更新请使用升级`,
-      installedVersion: existing.version || undefined,
-      warnings: [],
-    };
-  }
   const built = buildPluginCommand(pkg, harnessId, action, installed);
   if (!built) {
     return {
@@ -537,8 +539,12 @@ export async function applyPackageAction({
     const vars = templateVars(pkg, harnessId, repoDir);
 
     try {
-      let step;
-      if (customCmd) {
+      let step = pkg.kind === 'plugin' && action === 'install'
+        ? await installedPluginStep(pkg, harnessId, harnessPaths, dryRun)
+        : null;
+      if (step) {
+        // 已安装，跳过
+      } else if (customCmd) {
         step = await runCustomCommand(pkg, harnessId, action, customCmd, repoDir, { dryRun, runShell, rootDir, repoSynced });
       } else if (pkg.kind === 'plugin') {
         step = await applyPluginToHarness(pkg, harnessId, action, harnessPaths, { dryRun, runShell, rootDir });

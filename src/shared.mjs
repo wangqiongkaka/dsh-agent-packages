@@ -42,3 +42,15 @@ export const HARNESS_META = {
     mcpFormat: 'none',
   },
 };
+
+// 添加前的 Harness 前置检查：返回不支持的原因，支持时返回空串。配了该端自定义安装命令即视为可装。
+export function unsupportedReason(pkg, harnessId) {
+  if (pkg.commands?.[harnessId]?.install) return '';
+  if (pkg.kind === 'plugin') {
+    if (harnessId === 'dsh') return '暂无插件机制';
+    const declared = pkg.plugin?.harnesses ?? [];
+    if (declared.length && !declared.includes(harnessId)) return '仓库没有该端可用的插件清单';
+  }
+  if (pkg.kind === 'mcp' && !HARNESS_META[harnessId]?.supportsMcp) return '没有可写入的 MCP 配置文件';
+  return '';
+}

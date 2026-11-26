@@ -298,7 +298,7 @@ export function inferPackageFromRepoMeta({
         mode: 'symlink',
       },
       mcp,
-      ...(plugin ? { plugin: { name: plugin.name, marketplace: plugin.marketplace } } : {}),
+      ...(plugin ? { plugin: { name: plugin.name, marketplace: plugin.marketplace, harnesses: plugin.harnesses } } : {}),
       commands,
     },
     evidence: {
