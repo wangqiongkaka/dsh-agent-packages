@@ -1,10 +1,10 @@
 import { join } from 'node:path';
 import { HARNESS_IDS, HARNESS_META, resolveHarnessPaths } from './constants.mjs';
-import { unsupportedReason } from './shared.mjs';
+import { normalizeVersion, unsupportedReason } from './shared.mjs';
 import { PackageStore, normalizePackage } from './store.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
 import { applyPackageAction, defaultExecFile, defaultRunShell } from './installer.mjs';
-import { scanLocalEnvironment } from './scanner.mjs';
+import { readInstalledPlugins, scanLocalEnvironment } from './scanner.mjs';
 import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
@@ -12,6 +12,13 @@ function sameSource(a, b) {
   if (a.kind !== b.kind) return false;
   if (a.kind === 'plugin') return a.plugin.name === b.plugin.name && a.plugin.marketplace === b.plugin.marketplace;
   return Boolean(a.repo) && a.repo === b.repo;
+}
+
+function findLivePlugin(livePlugins, pkg, harnessId) {
+  if (pkg.kind !== 'plugin') return null;
+  return (livePlugins[harnessId]?.plugins ?? []).find(
+    p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace)
+  ) ?? null;
 }
 
 export class PackageManagerService {
@@ -57,6 +64,8 @@ export class PackageManagerService {
       this.store.readManifest(),
       this.store.readLock(),
     ]);
+    const hasPlugins = manifest.packages.some(p => p.kind === 'plugin');
+    const livePlugins = hasPlugins ? await readInstalledPlugins(await this.currentHarnessPaths()) : {};
     let outdatedCount = 0;
     let failedCount = 0;
     let pendingInstallCount = 0;
@@ -65,17 +74,21 @@ export class PackageManagerService {
       const lockEntry = lock.packages[pkg.id] ?? {};
       if (lockEntry.updateAvailable) outdatedCount++;
       const harnessStatuses = {};
+      const observedVersions = new Set();
       for (const harnessId of HARNESS_IDS) {
         const selected = pkg.targets.includes(harnessId);
         const hLock = lockEntry.harnesses?.[harnessId];
         const status = hLock?.status || (selected ? 'not-installed' : 'unselected');
         if (status === 'failed') failedCount++;
         if (selected && status === 'not-installed') pendingInstallCount++;
+        const live = status === 'installed' ? findLivePlugin(livePlugins, pkg, harnessId) : null;
+        const installedVersion = live?.version || hLock?.installedVersion || '';
+        if (status === 'installed' && installedVersion) observedVersions.add(installedVersion);
         harnessStatuses[harnessId] = {
           selected,
           status,
           method: hLock?.method || (pkg.commands?.[harnessId]?.install ? 'command' : 'adapter'),
-          installedVersion: hLock?.installedVersion || '',
+          installedVersion,
           installedCommit: hLock?.installedCommit || '',
           installedAt: hLock?.installedAt || null,
           managedPathsCount: Array.isArray(hLock?.managedPaths) ? hLock.managedPaths.length : 0,
@@ -83,12 +96,13 @@ export class PackageManagerService {
           lastError: hLock?.lastError || '',
         };
       }
+      const fallbackResolved = observedVersions.size === 1 ? [...observedVersions][0] : '';
       return {
         ...pkg,
         lock: {
           resolvedRef: lockEntry.resolvedRef || '',
           resolvedCommit: lockEntry.resolvedCommit || '',
-          resolvedVersion: lockEntry.resolvedVersion || '',
+          resolvedVersion: lockEntry.resolvedVersion || fallbackResolved,
           latestRef: lockEntry.latestRef || '',
           latestCommit: lockEntry.latestCommit || '',
           latestVersion: lockEntry.latestVersion || '',
@@ -334,19 +348,37 @@ export class PackageManagerService {
         const lock = await this.store.readLock();
         const targetIds = Array.isArray(input.ids) && input.ids.length ? new Set(input.ids) : null;
         const targets = targetIds ? manifest.packages.filter(p => targetIds.has(p.id)) : manifest.packages;
+        const livePlugins = targets.some(p => p.kind === 'plugin')
+          ? await readInstalledPlugins(await currentPaths())
+          : {};
         let updatedCount = 0;
         let errorCount = 0;
         for (const pkg of targets) {
           const prev = lock.packages[pkg.id] ?? {};
-          const check = await checkPackageUpdate(pkg, prev, {
+          const observedVersions = [];
+          for (const harnessId of HARNESS_IDS) {
+            const hLock = prev.harnesses?.[harnessId];
+            if (hLock?.status !== 'installed') continue;
+            const ver = findLivePlugin(livePlugins, pkg, harnessId)?.version || hLock.installedVersion || '';
+            if (ver) observedVersions.push(ver);
+          }
+          const checkLock = prev.resolvedVersion || !observedVersions.length
+            ? prev
+            : { ...prev, resolvedVersion: observedVersions[0] };
+          const check = await checkPackageUpdate(pkg, checkLock, {
             fetchImpl: this.fetchImpl,
             execCommand: this.execImpl,
             token: this.githubToken,
           });
+          // 若任一已装端版本落后于远端最新版本，也标记为可升级以便同步对齐
+          if (!check.updateAvailable && check.latestVersion && observedVersions.some(v => normalizeVersion(v) !== normalizeVersion(check.latestVersion))) {
+            check.updateAvailable = true;
+          }
           if (check.error) errorCount++;
           if (check.updateAvailable) updatedCount++;
           lock.packages[pkg.id] = {
             ...prev,
+            ...(checkLock.resolvedVersion && !prev.resolvedVersion ? { resolvedVersion: checkLock.resolvedVersion } : {}),
             latestRef: check.latestRef ?? prev.latestRef ?? '',
             latestCommit: check.latestCommit ?? prev.latestCommit ?? '',
             latestVersion: check.latestVersion ?? prev.latestVersion ?? '',

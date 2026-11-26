@@ -11,6 +11,7 @@ import { inferPackageFromRepoMeta, extractInstallCommandsFromReadme, pluginHookP
 import { PackageManagerService } from '../src/service.mjs';
 import { apiHandler, ENDPOINT, HEADER_KEY } from '../src/api.mjs';
 import { readCodexMcpServers, readJsonMcpServers } from '../src/config-editors.mjs';
+import { formatHarnessVersion, formatVersion, summarizePackageVersions } from '../src/shared.mjs';
 
 const execFileAsync = promisify(execFile);
 // 测试只用临时目录，避免经环境变量读到本机真实的 Claude / Codex 配置
@@ -523,4 +524,116 @@ test('读取 harness-provider 的 claudeCommand：缺少设置服务或读取出
   assert.equal(readHarnessClaudeCommand(settings([{ ns: 'harness-plugin', value: { claudeCommand: 1 } }])), '');
   assert.equal(readHarnessClaudeCommand(() => undefined), '');
   assert.equal(readHarnessClaudeCommand(() => { throw new Error('no settings'); }), '');
+});
+
+test('版本展示摘要：统一格式化语义版本、分支+提交、多端版本不一致与更新对比', () => {
+  assert.equal(formatVersion('5.3.3'), 'v5.3.3');
+  assert.equal(formatVersion('v1.4.0'), 'v1.4.0');
+  assert.equal(formatVersion('abcdef1234567890abcdef1234567890abcdef12'), 'abcdef1');
+  assert.equal(formatVersion('main'), 'main');
+
+  assert.equal(formatHarnessVersion({ status: 'installed', installedVersion: '5.3.3', installedCommit: '' }), 'v5.3.3');
+  assert.equal(formatHarnessVersion({ status: 'installed', installedVersion: 'main', installedCommit: 'abcdef1234567890' }), 'main (abcdef1)');
+  assert.equal(formatHarnessVersion({ status: 'not-installed', installedVersion: '5.3.3' }), '');
+
+  const uniform = summarizePackageVersions({
+    version: '',
+    ref: '',
+    lock: { resolvedVersion: '5.3.3', latestVersion: '5.3.3', updateAvailable: false, checkedAt: '2026-11-26T00:00:00Z' },
+    harnessStatuses: {
+      codex: { status: 'installed', installedVersion: '5.3.3' },
+      'claude-code': { status: 'installed', installedVersion: '5.3.3' },
+      antigravity: { status: 'installed', installedVersion: '5.3.3' },
+      dsh: { status: 'unselected' },
+    },
+  });
+  assert.equal(uniform.currentLabel, 'v5.3.3');
+  assert.equal(uniform.mixedVersions, false);
+  assert.equal(uniform.hasUpdate, false);
+  assert.equal(uniform.isUpToDate, true);
+
+  const mixed = summarizePackageVersions({
+    version: '',
+    ref: '',
+    lock: { latestVersion: '5.4.0', updateAvailable: true },
+    harnessStatuses: {
+      codex: { status: 'installed', installedVersion: '5.3.2' },
+      'claude-code': { status: 'installed', installedVersion: '5.3.3' },
+      antigravity: { status: 'not-installed' },
+      dsh: { status: 'unselected' },
+    },
+  });
+  assert.equal(mixed.currentLabel, 'v5.3.2 / v5.3.3');
+  assert.equal(mixed.mixedVersions, true);
+  assert.equal(mixed.hasUpdate, true);
+  assert.equal(mixed.latestLabel, 'v5.4.0');
+});
+
+test('未锁定版本的插件也能从本机各端实时读回版本号并参与更新检查', async t => {
+  const base = await mkdtemp(join(tmpdir(), 'ap-live-ver-'));
+  t.after(() => rm(base, { recursive: true, force: true }));
+  const homeDir = join(base, 'home');
+  const claudePlugins = join(homeDir, '.claude', 'plugins');
+  await mkdir(claudePlugins, { recursive: true });
+  await writeFile(join(claudePlugins, 'installed_plugins.json'), JSON.stringify({
+    version: 2,
+    plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '5.3.3' }] },
+  }));
+  await writeFile(join(claudePlugins, 'known_marketplaces.json'), JSON.stringify({
+    ponytail: { source: { source: 'github', repo: 'DietrichGebert/ponytail' } },
+  }));
+
+  // Codex 缓存目录名为 local，真实版本号在 .codex-plugin/plugin.json 内
+  const codexCache = join(homeDir, '.codex', 'plugins', 'cache', 'ponytail', 'ponytail', 'local', '.codex-plugin');
+  await mkdir(codexCache, { recursive: true });
+  await writeFile(join(homeDir, '.codex', 'config.toml'), '[marketplaces.ponytail]\nsource = "https://github.com/DietrichGebert/ponytail"\n\n[plugins."ponytail@ponytail"]\nenabled = true\n');
+  await writeFile(join(codexCache, 'plugin.json'), JSON.stringify({ name: 'ponytail', version: '5.3.2' }));
+
+  const agyPlugin = join(homeDir, '.gemini', 'config', 'plugins', 'ponytail', '.claude-plugin');
+  await mkdir(agyPlugin, { recursive: true });
+  await writeFile(join(agyPlugin, 'plugin.json'), JSON.stringify({ name: 'ponytail', version: '5.3.3' }));
+
+  // 远端无 Release，只有默认分支 .claude-plugin/plugin.json 标明 5.4.0
+  const mockFetch = async url => {
+    const u = String(url);
+    if (u.endsWith('/repos/DietrichGebert/ponytail')) return { ok: true, json: async () => ({ default_branch: 'main', name: 'ponytail' }) };
+    if (u.endsWith('/releases/latest')) return { ok: false, status: 404, json: async () => ({}) };
+    if (u.includes('/commits/main')) return { ok: true, json: async () => ({ sha: '1234567890abcdef1234567890abcdef12345678' }) };
+    if (u.endsWith('/.claude-plugin/plugin.json')) return { ok: true, text: async () => JSON.stringify({ name: 'ponytail', version: '5.4.0' }) };
+    return { ok: false, status: 404, json: async () => ({}), text: async () => '' };
+  };
+
+  const service = new PackageManagerService({
+    root: join(base, 'root'),
+    homeDir,
+    dshHome: join(homeDir, '.dsh'),
+    fetchImpl: mockFetch,
+    githubToken: '',
+    runShell: async () => ({ stdout: 'ok', stderr: '' }),
+  });
+  await service.init();
+
+  const saved = await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: {
+      id: 'ponytail',
+      name: 'ponytail',
+      kind: 'plugin',
+      repo: 'https://github.com/DietrichGebert/ponytail',
+      targets: ['codex', 'claude-code', 'antigravity'],
+      plugin: { name: 'ponytail', marketplace: 'ponytail', harnesses: ['codex', 'claude-code', 'antigravity'] },
+    },
+  });
+
+  const pkg = saved.state.packages[0];
+  assert.equal(pkg.harnessStatuses.codex.installedVersion, '5.3.2');
+  assert.equal(pkg.harnessStatuses['claude-code'].installedVersion, '5.3.3');
+  assert.equal(pkg.harnessStatuses.antigravity.installedVersion, '5.3.3');
+  assert.ok(pkg.lock.resolvedVersion, '安装回写时应记录读回的版本号');
+
+  const checked = await service.action({ type: 'packages.checkUpdates', ids: ['ponytail'] });
+  const after = checked.state.packages[0];
+  assert.equal(after.lock.latestVersion, '5.4.0');
+  assert.equal(after.lock.updateAvailable, true);
 });

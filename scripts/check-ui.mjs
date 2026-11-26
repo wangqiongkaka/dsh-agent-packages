@@ -196,16 +196,23 @@ try {
   await page.getByRole('button', { name: '保存并安装' }).click();
   await page.getByText('playwright-mcp').first().waitFor();
 
-  // 2. 检查更新并验证出现可升级徽章，再点击升级
+  // 2. 检查更新并验证出现版本对比徽章与状态化主按钮，再点击升级
   await page.getByRole('button', { name: '检查更新' }).click();
-  await page.getByText('可升级 → 0.0.29').waitFor();
+  await page.getByText('v0.0.28 → v0.0.29').waitFor();
   await page.screenshot({ path: 'artifacts/packages-outdated.png', fullPage: true });
 
   await page.getByRole('button', { name: '升级', exact: true }).click();
-  await page.getByText('当前：0.0.29').waitFor();
+  await page.getByText('v0.0.29').first().waitFor();
+  // 所有目标端已装齐且无更新时，卡片不再显示多余的「安装」按钮
+  assert.equal(await page.getByRole('button', { name: '安装', exact: true }).count(), 0);
 
-  // 3. 切换本机扫描与诊断，验证只读告警；本机导入已移除
-  await page.getByRole('tab', { name: '本机扫描与诊断' }).click();
+  // 打开「更多」菜单验证清晰的卸载/移除区分
+  await page.getByRole('button', { name: 'playwright-mcp 更多操作' }).click();
+  await page.getByRole('menuitem', { name: '卸载并移除' }).waitFor();
+  await page.keyboard.press('Escape');
+
+  // 3. 切换本机诊断，验证只读告警；本机导入已移除
+  await page.getByRole('tab', { name: '本机诊断' }).click();
   await page.getByText(/检测到旧版目录/).waitFor();
   await page.getByText('codegraph').waitFor();
   assert.equal(await page.getByRole('button', { name: '导入清单' }).count(), 0);
