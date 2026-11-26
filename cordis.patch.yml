@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-agent-packages
+      name: dsh-agent-packages
