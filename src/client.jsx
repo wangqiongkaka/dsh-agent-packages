@@ -268,10 +268,154 @@ const FILTER_KIND_OPTIONS = [
   { value: 'plugin', label: '插件（含 Hooks）' },
   { value: 'mcp', label: 'MCP Server' },
   { value: 'installer', label: '自定义安装器' },
-  { value: 'outdated', label: '仅看可升级' },
-  { value: 'pending', label: '仅看待安装' },
-  { value: 'failed', label: '仅看失败' },
 ];
+
+// 对齐状态列的表头只有约 44px 宽，用短名；完整端名放在每格的 aria-label / title 里
+const HARNESS_SHORT = { codex: 'Codex', 'claude-code': 'Claude', antigravity: 'Agy', dsh: 'DSH' };
+
+const STEP_STATUS_LABELS = {
+  ok: '成功',
+  error: '失败',
+  failed: '失败',
+  preview: '预览',
+  skipped: '跳过',
+  installed: '已安装',
+  uninstalled: '已卸载',
+};
+
+function glyphKind(status) {
+  if (status === 'installed' || status === 'managed') return 'ok';
+  if (status === 'failed') return 'fail';
+  if (status === 'not-installed') return 'pending';
+  if (status === 'unmanaged') return 'present';
+  if (status === 'uninstalled') return 'idle';
+  return 'none';
+}
+
+// 形状 + 颜色双重编码：实心点=已装（诊断里中性色实心点=未纳管），空心环=待装/已卸载，✕=失败，短横=未启用
+function Glyph({ status }) {
+  const kind = glyphKind(status);
+  return (
+    <svg className={`ap-glyph ap-glyph-${kind}`} viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
+      {(kind === 'ok' || kind === 'present') && <circle cx="6" cy="6" r="4.5" fill="currentColor" />}
+      {(kind === 'pending' || kind === 'idle') && <circle cx="6" cy="6" r="3.75" fill="none" stroke="currentColor" strokeWidth="1.6" />}
+      {kind === 'fail' && <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />}
+      {kind === 'none' && <path d="M3.5 6h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />}
+    </svg>
+  );
+}
+
+function MatrixHead({ lead = '', tail = '' }) {
+  return (
+    <div className="ap-matrix-row ap-col-head" aria-hidden="true">
+      <span>{lead}</span>
+      <div className="ap-cells">
+        {HARNESS_IDS.map(h => (
+          <span key={h} className="ap-cell" title={HARNESS_META[h].label}>{HARNESS_SHORT[h]}</span>
+        ))}
+      </div>
+      <span>{tail}</span>
+    </div>
+  );
+}
+
+// cells: [{ harnessId, status, label, text? }]，text 用于展示数量等非状态值
+function MatrixCells({ cells, ariaLabel }) {
+  return (
+    <div className="ap-cells" role="group" aria-label={ariaLabel}>
+      {cells.map(cell => (
+        <span
+          key={cell.harnessId}
+          role="img"
+          className={`ap-cell ${cell.muted ? 'is-muted' : ''}`.trim()}
+          aria-label={cell.label}
+          title={cell.label}
+        >
+          {cell.text != null ? <span className="ap-cell-num">{cell.text}</span> : <Glyph status={cell.status} />}
+          <span className="ap-cell-label" aria-hidden="true">{HARNESS_SHORT[cell.harnessId]}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function LogPanel({ log, onClear }) {
+  const failed = log.steps.filter(step => step.status === 'error' || step.status === 'failed').length;
+  const summary = failed
+    ? `${failed} 步失败`
+    : log.preview ? '仅预览，未写入' : '全部完成';
+  return (
+    // 失败或主动预览时默认展开：这两种情况用户需要读具体内容
+    <details key={log.id} className="ap-logs ap-advanced" open={failed > 0 || log.preview}>
+      <summary>
+        执行记录
+        <span className={failed ? 'ap-logs-sum is-error' : 'ap-help'}>{log.steps.length} 步 · {summary}</span>
+      </summary>
+      <div className="ap-log-list">
+        {log.steps.map((step, index) => (
+          <div key={index} className="ap-log-item">
+            <div className="ap-log-top">
+              <span className={stepBadgeClass(step.status)}>{STEP_STATUS_LABELS[step.status] || step.status}</span>
+              {step.packageName && <strong>{step.packageName}</strong>}
+              <span className="ap-badge">
+                {step.harness === 'shared'
+                  ? '全局 CLI'
+                  : step.harness === 'repo'
+                    ? '仓库'
+                    : step.harness === 'instructions'
+                      ? '全局指令'
+                      : (HARNESS_META[step.harness]?.label || step.harness)}
+              </span>
+              <span>{step.detail}</span>
+            </div>
+            {step.command && <pre className="ap-log-out">$ {step.command}</pre>}
+            {step.output && <pre className="ap-log-out">{step.output}</pre>}
+            {step.warnings?.length > 0 && (
+              <p className="ap-help" style={{ color: 'var(--ap-warn)' }}>
+                提示：{step.warnings.join('；')}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="ap-logs-foot">
+        <Button variant="outline" onClick={onClear}>清空记录</Button>
+      </div>
+    </details>
+  );
+}
+
+// 需要处理的包给出一句原因与一个修复动作；返回 null 表示已就绪
+function packageAttention(pkg, ver) {
+  const labelOf = h => HARNESS_META[h]?.label || h;
+  const failed = pkg.targets.filter(h => pkg.harnessStatuses[h]?.status === 'failed');
+  const pending = pkg.targets.filter(h => ['not-installed', 'uninstalled'].includes(pkg.harnessStatuses[h]?.status));
+  if (failed.length) {
+    return {
+      level: 'error',
+      reason: failed.map(h => `${labelOf(h)} 安装失败${pkg.harnessStatuses[h]?.lastError ? `：${pkg.harnessStatuses[h].lastError}` : ''}`).join('；'),
+      action: { type: 'package.install', label: '重试安装', busy: '安装中…' },
+    };
+  }
+  if (pending.length) {
+    return {
+      level: 'warn',
+      reason: `尚未安装到 ${pending.map(labelOf).join('、')}`,
+      action: { type: 'package.install', label: '安装', busy: '安装中…' },
+    };
+  }
+  if (ver.hasUpdate) {
+    return { level: 'warn', reason: '', action: { type: 'package.upgrade', label: '升级', busy: '升级中…' } };
+  }
+  if (pkg.lock.checkError) {
+    return {
+      level: 'warn',
+      reason: `检查更新失败：${pkg.lock.checkError}`,
+      action: { type: 'packages.checkUpdates', label: '重新检查', busy: '检查中…' },
+    };
+  }
+  return null;
+}
 
 const KIND_OPTIONS = Object.entries(KIND_LABELS).map(([value, label]) => ({ value, label }));
 
@@ -475,7 +619,12 @@ export function PackagesPage() {
   const [inspecting, setInspecting] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [logs, setLogs] = useState([]);
+  const [noticeWarn, setNoticeWarn] = useState(false);
+  // 执行记录与提示只属于触发它的视图：{ id, tab, steps, preview }
+  const [log, setLog] = useState(null);
+  const [pendingKey, setPendingKey] = useState('');
+  const [confirm, setConfirm] = useState(null);
+  const [expanded, setExpanded] = useState({});
   const [reloadTick, setReloadTick] = useState(0);
 
   const [editorOpen, setEditorOpen] = useState(false);
@@ -486,7 +635,6 @@ export function PackagesPage() {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const [scanReport, setScanReport] = useState(null);
-  const [doctorHarness, setDoctorHarness] = useState(HARNESS_IDS[0]);
   const [openMenuId, setOpenMenuId] = useState('');
 
   const [instrDraft, setInstrDraft] = useState(() => instructionsToDraft(null));
@@ -553,24 +701,43 @@ export function PackagesPage() {
     }
   }
 
-  async function runAction(payload, { onSuccess, silentNotice = false } = {}) {
+  // key 标记正在执行的具体按钮（如 package.install:hindsight），让它显示「安装中…」
+  async function runAction(payload, { onSuccess, silentNotice = false, key = '' } = {}) {
     if (!sessionKey) return;
+    const originTab = tab;
     setBusy(true);
+    setPendingKey(key);
     setError('');
     if (!silentNotice) setNotice('');
     try {
       const result = await postWithAutoKey(payload);
       if (result.state) setState(result.state);
-      if (!silentNotice && result.message) setNotice(result.message);
-      if (Array.isArray(result.steps) && result.steps.length) {
-        setLogs(result.steps);
+      // 新操作取代旧记录：没有步骤的操作也清掉上一条，避免残留已不相关的记录
+      const steps = Array.isArray(result.steps) && result.steps.length ? result.steps : null;
+      if (!silentNotice && result.message) {
+        setNotice(result.message);
+        // 部分失败不能用成功色提示
+        setNoticeWarn(Boolean(steps?.some(step => step.status === 'error' || step.status === 'failed')));
       }
+      setLog(prev => (steps
+        ? { id: (prev?.id ?? 0) + 1, tab: originTab, steps, preview: Boolean(payload.dryRun) }
+        : (prev?.tab === originTab ? null : prev)));
       if (onSuccess) onSuccess(result);
     } catch (cause) {
       setError(cause.message);
     } finally {
       setBusy(false);
+      setPendingKey('');
     }
+  }
+
+  function switchTab(next) {
+    if (next === tab) return;
+    setTab(next);
+    setNotice('');
+    setError('');
+    setOpenMenuId('');
+    setConfirm(null);
   }
 
   async function fetchModelsForHarness(harness, { force = false } = {}) {
@@ -626,6 +793,7 @@ export function PackagesPage() {
         },
       },
       {
+        key: 'settings.save',
         onSuccess: res => {
           const saved = res.settings?.analyzer ?? { harness: '', model: '' };
           setAnalyzerHarness(saved.harness || '');
@@ -663,6 +831,7 @@ export function PackagesPage() {
     setEditorOpen(false);
     setEditingOriginalId('');
     setEvidence(null);
+    setSettingsOpen(false);
   }
 
   function openNewEditor() {
@@ -672,8 +841,9 @@ export function PackagesPage() {
     setNameTouched(false);
     setEvidence(null);
     setShowAdvanced(false);
+    setSettingsOpen(false);
     setEditorOpen(true);
-    setTab('packages');
+    switchTab('packages');
   }
 
   function openEditEditor(pkg) {
@@ -682,8 +852,10 @@ export function PackagesPage() {
     setDraft(packageToDraft(pkg));
     setEvidence(null);
     setShowAdvanced(false);
+    setSettingsOpen(false);
+    setConfirm(null);
     setEditorOpen(true);
-    setTab('packages');
+    switchTab('packages');
   }
 
   function toggleTarget(harnessId) {
@@ -751,6 +923,7 @@ export function PackagesPage() {
         dryRun,
       },
       {
+        key: `editor:${dryRun ? 'preview' : installNow ? 'install' : 'save'}`,
         onSuccess: () => {
           if (!dryRun) closeEditor();
         },
@@ -873,10 +1046,7 @@ export function PackagesPage() {
     const list = state?.packages ?? [];
     const needle = search.trim().toLowerCase();
     return list.filter(pkg => {
-      if (filterKind === 'outdated' && !pkg.lock.updateAvailable) return false;
-      if (filterKind === 'pending' && !pkg.targets.some(h => ['not-installed', 'uninstalled'].includes(pkg.harnessStatuses[h]?.status))) return false;
-      if (filterKind === 'failed' && !pkg.targets.some(h => pkg.harnessStatuses[h]?.status === 'failed')) return false;
-      if (['skills-repo', 'plugin', 'mcp', 'installer'].includes(filterKind) && pkg.kind !== filterKind) return false;
+      if (filterKind !== 'all' && pkg.kind !== filterKind) return false;
       if (!needle) return true;
       return (
         pkg.name.toLowerCase().includes(needle) ||
@@ -914,6 +1084,7 @@ export function PackagesPage() {
         dryRun,
       },
       {
+        key: `instr:${syncNow ? 'sync' : 'save'}`,
         onSuccess: res => {
           if (res.state?.instructions) {
             setInstrDraft(instructionsToDraft(res.state.instructions));
@@ -964,56 +1135,30 @@ export function PackagesPage() {
   const modelInList = !analyzerModel || currentModels.some(m => m.id === analyzerModel);
   const modelSelectValue = customModelMode || !modelInList ? CUSTOM_MODEL_VALUE : analyzerModel;
 
-  function toggleStatusFilter(targetFilter) {
-    setFilterKind(prev => (prev === targetFilter ? 'all' : targetFilter));
+  function busyLabel(key, idle, running) {
+    return pendingKey === key ? running : idle;
   }
 
   return (
     <main className="ap" aria-label="Skills 与 MCP 统一管理">
       <style>{styles}</style>
 
-      <header className="ap-header">
-        <div className="ap-title-group">
-          <h2>Skills &amp; MCP</h2>
-        </div>
-        <div className="ap-actions">
-          <Button variant="outline" disabled={busy || !state} onClick={openNewEditor}>添加包</Button>
-          <Button
-            variant="outline"
-            disabled={busy || !state}
-            onClick={() => (settingsOpen ? setSettingsOpen(false) : openSettingsPanel())}
-          >
-            解析设置
-          </Button>
-          {state && state.packages.length > 0 && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void runAction({ type: 'packages.checkUpdates' })}
-            >
-              检查更新
-            </Button>
-          )}
-          {state && state.summary.outdated > 0 && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void runAction({ type: 'packages.upgradeAll', dryRun: false })}
-            >
-              全部升级（{state.summary.outdated}）
-            </Button>
-          )}
-          {needsGlobalSync && (
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => void runAction({ type: 'packages.syncAll', dryRun: false })}
-            >
-              全部同步
-            </Button>
-          )}
-        </div>
-      </header>
+      {state && (
+        <nav className="ap-tabs" aria-label="管理视图">
+          <div className="ap-tablist" role="tablist" aria-label="管理视图">
+            <button type="button" role="tab" className="ap-tab" aria-selected={tab === 'packages'} onClick={() => switchTab('packages')}>
+              包清单（{state.packages.length}）
+            </button>
+            <button type="button" role="tab" className="ap-tab" aria-selected={tab === 'instructions'} onClick={() => switchTab('instructions')}>
+              全局指令
+              {instrDirty && <span className="ap-tab-dot" title="有未保存修改"><span className="ap-sr-only">（未保存）</span></span>}
+            </button>
+            <button type="button" role="tab" className="ap-tab" aria-selected={tab === 'doctor'} onClick={() => switchTab('doctor')}>
+              本机诊断
+            </button>
+          </div>
+        </nav>
+      )}
 
       {error && (
         <div className="ap-banner-error" role="alert">
@@ -1023,13 +1168,61 @@ export function PackagesPage() {
           )}
         </div>
       )}
-      {notice && <div className="ap-banner-notice" role="status">{notice}</div>}
+      {notice && <div className={`ap-banner-notice ${noticeWarn ? 'is-warn' : ''}`.trim()} role="status">{notice}</div>}
 
-      {state && settingsOpen && (
-        <section className="ap-card ap-settings-card" aria-label="全局解析设置">
-          <div className="ap-editor-head">
-            <h3>全局解析设置</h3>
-            <Button variant="outline" disabled={busy} onClick={() => setSettingsOpen(false)}>收起</Button>
+      {!state ? (
+        <p className="ap-help" role="status">{error ? '请检查插件后台状态。' : '正在读取包清单与锁文件…'}</p>
+      ) : (
+        <>
+          {tab === 'packages' && (() => {
+            const editorPanel = editorOpen ? (
+              <section
+                key={editingOriginalId || 'new'}
+                className="ap-card ap-editor"
+                aria-label={editingOriginalId ? '编辑包配置' : '添加新包'}
+              >
+                <div className="ap-editor-head">
+                  <h3>{editingOriginalId ? `编辑 ${editingOriginalId}` : '添加包'}</h3>
+                  <Button variant="outline" disabled={busy} onClick={closeEditor}>收起</Button>
+                </div>
+
+                  <div className="ap-inspect-row">
+                    <div className="ap-field">
+                      <label htmlFor="ap-repo">GitHub 仓库</label>
+                      <input
+                        id="ap-repo"
+                        className="ap-input"
+                        placeholder="owner/repo 或 GitHub 链接"
+                        value={draft.repo}
+                        onChange={e => setDraft(prev => ({ ...prev, repo: e.target.value }))}
+                      />
+                    </div>
+                    <Button
+                      variant="outline"
+                      disabled={busy || inspecting || !draft.repo.trim()}
+                      onClick={() => void handleInspectRepo()}
+                    >
+                      {inspecting ? (savedAnalyzer.harness ? '深度分析中…' : '解析中…') : '解析仓库'}
+                    </Button>
+                  </div>
+                  <div className="ap-analyzer-hint">
+                    <span>当前解析：{savedAnalyzerLabel}{savedAnalyzer.harness ? '（深度模式）' : ''}</span>
+                    {!settingsOpen && (
+                      <button
+                        type="button"
+                        className="ap-link-btn"
+                        disabled={busy || inspecting}
+                        onClick={openSettingsPanel}
+                      >
+                        切换
+                      </button>
+                    )}
+                  </div>
+      {settingsOpen && (
+        <section className="ap-settings-card" aria-label="全局解析设置">
+          <div className="ap-settings-head">
+            <h4>全局解析设置</h4>
+            <span className="ap-help">对之后所有「解析仓库」生效</span>
           </div>
           <div className="ap-grid">
             <div className="ap-field">
@@ -1093,148 +1286,12 @@ export function PackagesPage() {
                 {loadingModels ? '刷新中…' : '刷新模型'}
               </Button>
             )}
-            <Button variant="outline" disabled={busy} onClick={() => void saveAnalyzerSettings()}>保存设置</Button>
+            <Button variant="outline" disabled={busy} onClick={() => setSettingsOpen(false)}>关闭</Button>
+            <Button variant="outline" disabled={busy} onClick={() => void saveAnalyzerSettings()}>{busyLabel('settings.save', '保存设置', '保存中…')}</Button>
           </div>
         </section>
       )}
 
-      {!state ? (
-        <p className="ap-help" role="status">{error ? '请检查插件后台状态。' : '正在读取包清单与锁文件…'}</p>
-      ) : (
-        <>
-          <div className="ap-tabs">
-            <div className="ap-tabs-left">
-              <div className="ap-tablist" role="tablist" aria-label="管理视图">
-                <button
-                  type="button"
-                  role="tab"
-                  className="ap-tab"
-                  aria-selected={tab === 'packages'}
-                  onClick={() => setTab('packages')}
-                >
-                  包清单（{state.packages.length}）
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  className="ap-tab"
-                  aria-selected={tab === 'instructions'}
-                  onClick={() => setTab('instructions')}
-                >
-                  全局指令
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  className="ap-tab"
-                  aria-selected={tab === 'doctor'}
-                  onClick={() => setTab('doctor')}
-                >
-                  本机诊断
-                </button>
-              </div>
-
-              {tab === 'packages' && (state.summary.outdated > 0 || state.summary.pendingInstall > 0 || state.summary.failed > 0) && (
-                <div className="ap-status-pills" aria-label="待处理状态筛选">
-                  {state.summary.outdated > 0 && (
-                    <button
-                      type="button"
-                      className={`ap-status-pill ap-pill-warn ${filterKind === 'outdated' ? 'is-active' : ''}`}
-                      aria-pressed={filterKind === 'outdated'}
-                      onClick={() => toggleStatusFilter('outdated')}
-                    >
-                      可升级 {state.summary.outdated}
-                    </button>
-                  )}
-                  {state.summary.pendingInstall > 0 && (
-                    <button
-                      type="button"
-                      className={`ap-status-pill ap-pill-warn ${filterKind === 'pending' ? 'is-active' : ''}`}
-                      aria-pressed={filterKind === 'pending'}
-                      onClick={() => toggleStatusFilter('pending')}
-                    >
-                      待安装 {state.summary.pendingInstall}
-                    </button>
-                  )}
-                  {state.summary.failed > 0 && (
-                    <button
-                      type="button"
-                      className={`ap-status-pill ap-pill-error ${filterKind === 'failed' ? 'is-active' : ''}`}
-                      aria-pressed={filterKind === 'failed'}
-                      onClick={() => toggleStatusFilter('failed')}
-                    >
-                      失败 {state.summary.failed}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {tab === 'packages' && showFilters && (
-              <div className="ap-filters">
-                <Select
-                  id="ap-filter-kind"
-                  ariaLabel="按类型筛选"
-                  className="ap-filter-select"
-                  value={filterKind}
-                  options={FILTER_KIND_OPTIONS}
-                  onChange={setFilterKind}
-                />
-                <input
-                  type="search"
-                  aria-label="搜索包名称或 GitHub 地址"
-                  className="ap-input ap-search"
-                  placeholder="搜索…"
-                  title="按名称或仓库地址搜索"
-                  value={search}
-                  onChange={e => setSearch(e.target.value)}
-                />
-              </div>
-            )}
-          </div>
-
-          {tab === 'packages' && (() => {
-            const editorPanel = editorOpen ? (
-              <section
-                key={editingOriginalId || 'new'}
-                className="ap-card ap-editor"
-                aria-label={editingOriginalId ? '编辑包配置' : '添加新包'}
-              >
-                <div className="ap-editor-head">
-                  <h3>{editingOriginalId ? `编辑 ${editingOriginalId}` : '添加包'}</h3>
-                  <Button variant="outline" disabled={busy} onClick={closeEditor}>收起</Button>
-                </div>
-
-                  <div className="ap-inspect-row">
-                    <div className="ap-field">
-                      <label htmlFor="ap-repo">GitHub 仓库</label>
-                      <input
-                        id="ap-repo"
-                        className="ap-input"
-                        placeholder="owner/repo 或 GitHub 链接"
-                        value={draft.repo}
-                        onChange={e => setDraft(prev => ({ ...prev, repo: e.target.value }))}
-                      />
-                    </div>
-                    <Button
-                      variant="outline"
-                      disabled={busy || inspecting || !draft.repo.trim()}
-                      onClick={() => void handleInspectRepo()}
-                    >
-                      {inspecting ? (savedAnalyzer.harness ? '深度分析中…' : '解析中…') : '解析仓库'}
-                    </Button>
-                  </div>
-                  <div className="ap-analyzer-hint">
-                    <span>当前解析：{savedAnalyzerLabel}{savedAnalyzer.harness ? '（深度模式）' : ''}</span>
-                    <button
-                      type="button"
-                      className="ap-link-btn"
-                      disabled={busy || inspecting}
-                      onClick={openSettingsPanel}
-                    >
-                      切换
-                    </button>
-                  </div>
 
                   {evidence && (
                     <div className="ap-evidence">
@@ -1560,247 +1617,308 @@ export function PackagesPage() {
 
                   <div className="ap-editor-footer">
                     <Button variant="outline" disabled={busy} onClick={closeEditor}>取消</Button>
-                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>仅保存</Button>
-                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>保存并预览</Button>
-                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>保存并安装</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: false })}>{busyLabel('editor:save', '仅保存', '保存中…')}</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: true })}>{busyLabel('editor:preview', '保存并预览', '预览中…')}</Button>
+                    <Button variant="outline" disabled={busy || blockedTargets.length > 0} onClick={() => void submitEditor({ installNow: true, dryRun: false })}>{busyLabel('editor:install', '保存并安装', '安装中…')}</Button>
                   </div>
                 </section>
             ) : null;
 
+            const decorated = filteredPackages.map(pkg => {
+              const ver = summarizePackageVersions(pkg);
+              return { pkg, ver, attention: packageAttention(pkg, ver) };
+            });
+            const attentionRows = decorated.filter(item => item.attention);
+            const readyRows = decorated.filter(item => !item.attention);
+            const filtering = filterKind !== 'all' || Boolean(search.trim());
+
+            const renderRow = ({ pkg, ver, attention }) => {
+              if (editingInline && pkg.id === editingOriginalId) return editorPanel;
+              const needsInstall = pkg.targets.some(h => ['not-installed', 'uninstalled', 'failed'].includes(pkg.harnessStatuses[h]?.status));
+              const installedHarnesses = HARNESS_IDS.filter(h => pkg.harnessStatuses[h]?.status === 'installed');
+              const visibleHarnesses = HARNESS_IDS.filter(h => pkg.harnessStatuses[h]?.selected || pkg.harnessStatuses[h]?.status !== 'unselected');
+              const showId = pkg.id.replace(/[^a-z0-9]/gi, '').toLowerCase() !== pkg.name.replace(/[^a-z0-9]/gi, '').toLowerCase();
+              const menuOpen = openMenuId === pkg.id;
+              const isOpen = Boolean(expanded[pkg.id]);
+              const rowBusy = busy && pendingKey.endsWith(`:${pkg.id}`);
+              const detailId = `ap-detail-${pkg.id}`;
+              const installedText = installedHarnesses.map(h => HARNESS_META[h].label).join('、');
+              const pendingConfirm = confirm?.id === pkg.id ? confirm : null;
+              const actionPayload = act => (act.type === 'packages.checkUpdates' ? { type: act.type, ids: [pkg.id] } : { type: act.type, id: pkg.id });
+              const run = (payload, key) => {
+                setOpenMenuId('');
+                void runAction(payload, { key: key ? `${key}:${pkg.id}` : '' });
+              };
+              const ask = mode => {
+                setOpenMenuId('');
+                setConfirm({ id: pkg.id, mode });
+              };
+              const confirmCopy = {
+                uninstall: { text: `将从 ${installedText} 删除 ${pkg.name} 的已装文件，清单中保留配置，之后可重新安装。`, button: '确认卸载', payload: { type: 'package.uninstall', id: pkg.id } },
+                purge: { text: `将从 ${installedText} 删除 ${pkg.name} 的已装文件，并从清单移除这条记录。`, button: '确认卸载并移除', payload: { type: 'package.delete', id: pkg.id, uninstallFirst: true } },
+                remove: {
+                  text: installedHarnesses.length
+                    ? `将从清单移除 ${pkg.name}；${installedText} 上的已装文件保持不变，之后不再受管。`
+                    : `将从清单移除 ${pkg.name}。`,
+                  button: '确认移除',
+                  payload: { type: 'package.delete', id: pkg.id, uninstallFirst: false },
+                },
+              };
+              const cells = HARNESS_IDS.map(h => {
+                const hs = pkg.harnessStatuses[h] || { status: 'unselected' };
+                const active = hs.selected || hs.status !== 'unselected';
+                const verText = formatHarnessVersion(hs);
+                return {
+                  harnessId: h,
+                  status: active ? (hs.status === 'unselected' ? 'not-installed' : hs.status) : 'unselected',
+                  muted: !hs.selected && active,
+                  label: [
+                    `${HARNESS_META[h].label}：${active ? statusLabel(hs.status) : '未启用'}`,
+                    verText && hs.status === 'installed' ? verText : '',
+                    hs.lastError ? `错误：${hs.lastError}` : '',
+                  ].filter(Boolean).join(' · '),
+                };
+              });
+
+              return (
+                <article
+                  key={pkg.id}
+                  className={`ap-matrix-row ap-pkg-card ${attention ? `is-${attention.level}` : ''} ${rowBusy ? 'is-busy' : ''}`.trim()}
+                  aria-busy={rowBusy || undefined}
+                >
+                  <div className="ap-row-main">
+                    <div className="ap-pkg-title-row">
+                      <button
+                        type="button"
+                        className="ap-row-toggle"
+                        aria-expanded={isOpen}
+                        aria-controls={detailId}
+                        onClick={() => setExpanded(prev => ({ ...prev, [pkg.id]: !prev[pkg.id] }))}
+                      >
+                        <svg className="ap-row-chevron" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+                          <path d="M6 4l4 4-4 4" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        <span className="ap-pkg-title">{pkg.name}</span>
+                      </button>
+                      <span className="ap-badge ap-badge-kind">{CARD_KIND_LABELS[pkg.kind] || pkg.kind}</span>
+                      {ver.hasUpdate ? (
+                        <span className="ap-badge ap-badge-update" title={`当前 ${ver.currentLabel || '未锁定'}，远端最新 ${ver.latestLabel}`}>
+                          {ver.currentLabel ? `${ver.currentLabel} → ${ver.latestLabel}` : `可升级 → ${ver.latestLabel}`}
+                        </span>
+                      ) : ver.currentLabel ? (
+                        <span
+                          className={`ap-badge ${ver.mixedVersions ? 'ap-badge-update' : 'ap-badge-ver'}`}
+                          title={ver.mixedVersions ? '各端已装版本不一致，升级可对齐' : ver.isUpToDate ? `已是最新（上次检查：${new Date(pkg.lock.checkedAt).toLocaleString()}）` : `当前版本：${ver.currentLabel}`}
+                        >
+                          {ver.currentLabel}{ver.isUpToDate ? ' · 最新' : ''}
+                        </span>
+                      ) : (
+                        <span className="ap-badge">未锁定</span>
+                      )}
+                    </div>
+                  </div>
+
+                  <MatrixCells cells={cells} ariaLabel={`${pkg.name} 各端状态`} />
+
+                  <div className="ap-pkg-actions">
+                    {attention?.action && (
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        onClick={() => run(actionPayload(attention.action), attention.action.type)}
+                      >
+                        {busyLabel(`${attention.action.type}:${pkg.id}`, attention.action.label, attention.action.busy)}
+                      </Button>
+                    )}
+                    <div className="ap-menu-wrap">
+                      <Button
+                        variant="outline"
+                        disabled={busy}
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
+                        aria-label={`${pkg.name} 更多操作`}
+                        onClick={() => setOpenMenuId(menuOpen ? '' : pkg.id)}
+                      >
+                        更多 ▾
+                      </Button>
+                      {menuOpen && (
+                        <div className="ap-menu-pop" role="menu" aria-label={`${pkg.name} 操作菜单`}>
+                          <button type="button" role="menuitem" className="ap-menu-item" onClick={() => openEditEditor(pkg)}>编辑</button>
+                          <button type="button" role="menuitem" className="ap-menu-item" onClick={() => run({ type: 'packages.checkUpdates', ids: [pkg.id] }, 'packages.checkUpdates')}>检查更新</button>
+                          {needsInstall && ver.hasUpdate && (
+                            <button type="button" role="menuitem" className="ap-menu-item" onClick={() => run({ type: 'package.upgrade', id: pkg.id }, 'package.upgrade')}>
+                              升级到 {ver.latestLabel}
+                            </button>
+                          )}
+                          {!needsInstall && (
+                            <button type="button" role="menuitem" className="ap-menu-item" onClick={() => run({ type: 'package.install', id: pkg.id }, 'package.install')}>重新同步</button>
+                          )}
+                          <button type="button" role="menuitem" className="ap-menu-item" onClick={() => run({ type: 'package.install', id: pkg.id, dryRun: true })}>预览变更</button>
+                          <hr className="ap-menu-sep" />
+                          {installedHarnesses.length > 0 ? (
+                            <>
+                              <button type="button" role="menuitem" className="ap-menu-item" onClick={() => ask('uninstall')}>仅从各端卸载</button>
+                              <button type="button" role="menuitem" className="ap-menu-item" onClick={() => ask('remove')}>仅从清单移除</button>
+                              <button type="button" role="menuitem" className="ap-menu-item ap-menu-danger" onClick={() => ask('purge')}>卸载并移除</button>
+                            </>
+                          ) : (
+                            <button type="button" role="menuitem" className="ap-menu-item ap-menu-danger" onClick={() => ask('remove')}>从清单移除</button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {attention?.reason && <p className={`ap-row-reason is-${attention.level}`}>{attention.reason}</p>}
+
+                  {pendingConfirm && (
+                    <div className="ap-confirm" role="group" aria-label={`确认${confirmCopy[pendingConfirm.mode].button.replace('确认', '')}`}>
+                      <p>{confirmCopy[pendingConfirm.mode].text}</p>
+                      <div className="ap-actions">
+                        <Button variant="outline" disabled={busy} autoFocus onClick={() => setConfirm(null)}>取消</Button>
+                        <Button
+                          variant="outline"
+                          style={{ color: 'var(--ap-error)', borderColor: 'color-mix(in srgb, var(--ap-error) 55%, transparent)' }}
+                          disabled={busy}
+                          onClick={() => {
+                            const { payload } = confirmCopy[pendingConfirm.mode];
+                            setConfirm(null);
+                            void runAction(payload, { key: `${payload.type}:${pkg.id}` });
+                          }}
+                        >
+                          {confirmCopy[pendingConfirm.mode].button}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isOpen && (
+                    <div id={detailId} className="ap-row-detail">
+                      <div className="ap-pkg-meta">
+                        {pkg.repo && (
+                          isHttpUrl(pkg.repo) ? (
+                            <a href={pkg.repo} target="_blank" rel="noreferrer">{pkg.repo.replace(/^https:\/\/github\.com\//, '')}</a>
+                          ) : (
+                            <span className="ap-meta-path" title={pkg.repo}>{pkg.repo}</span>
+                          )
+                        )}
+                        {showId && <span>ID: <code>{pkg.id}</code></span>}
+                        {pkg.npmPackage && <span>npm: <code>{pkg.npmPackage}</code></span>}
+                      </div>
+                      {pkg.description && <p className="ap-pkg-desc">{pkg.description}</p>}
+                      {visibleHarnesses.length > 0 ? (
+                        <ul className="ap-mini-list ap-detail-harness">
+                          {visibleHarnesses.map(h => {
+                            const hs = pkg.harnessStatuses[h];
+                            const verText = formatHarnessVersion(hs);
+                            return (
+                              <li key={h}>
+                                <span className="ap-detail-name"><Glyph status={hs.selected ? hs.status : 'uninstalled'} />{HARNESS_META[h].label}</span>
+                                <span className="ap-detail-state">
+                                  {statusLabel(hs.status)}
+                                  {hs.status === 'installed' && verText ? <code> {verText}</code> : null}
+                                  {hs.selected && hs.method === 'command' ? ' · 自定义命令' : ''}
+                                  {!hs.selected ? ' · 已不在目标端' : ''}
+                                  {hs.lastError ? <span className="ap-detail-error">{hs.lastError}</span> : null}
+                                </span>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="ap-help">未选择目标端。</p>
+                      )}
+                      <div className="ap-actions">
+                        <Button variant="outline" disabled={busy} onClick={() => openEditEditor(pkg)}>编辑配置</Button>
+                      </div>
+                    </div>
+                  )}
+                </article>
+              );
+            };
+
             return (
               <>
+                <div className="ap-toolbar">
+                  {showFilters && (
+                    <div className="ap-filters">
+                      <input
+                        type="search"
+                        aria-label="搜索包名称或 GitHub 地址"
+                        className="ap-input ap-search"
+                        placeholder="搜索名称或仓库"
+                        value={search}
+                        onChange={e => setSearch(e.target.value)}
+                      />
+                      <Select
+                        id="ap-filter-kind"
+                        ariaLabel="按类型筛选"
+                        className="ap-filter-select"
+                        value={filterKind}
+                        options={FILTER_KIND_OPTIONS}
+                        onChange={setFilterKind}
+                      />
+                    </div>
+                  )}
+                  <div className="ap-actions ap-toolbar-actions">
+                    {state.packages.length > 0 && (
+                      <Button variant="outline" disabled={busy} onClick={() => void runAction({ type: 'packages.checkUpdates' }, { key: 'packages.checkUpdates:all' })}>
+                        {busyLabel('packages.checkUpdates:all', '检查更新', '检查中…')}
+                      </Button>
+                    )}
+                    <Button variant="outline" disabled={busy || (editorOpen && !editingOriginalId)} onClick={openNewEditor}>添加包</Button>
+                  </div>
+                </div>
+
                 {!editingInline && editorPanel}
 
                 {filteredPackages.length === 0 ? (
-                <div className="ap-empty">
-                  <p>
-                    {state.packages.length === 0
-                      ? '清单还是空的。填入 GitHub 地址即可添加包；已安装的插件再次添加不会重复安装。'
-                      : '当前筛选条件下没有匹配的包。'}
-                  </p>
-                  {state.packages.length === 0 && (
+                  <div className="ap-empty">
+                    <p>
+                      {state.packages.length === 0
+                        ? '清单还是空的。填入 GitHub 地址即可添加包；已安装的插件再次添加不会重复安装。'
+                        : '没有符合当前筛选条件的包。'}
+                    </p>
                     <div className="ap-actions" style={{ justifyContent: 'center' }}>
-                      <Button variant="outline" onClick={openNewEditor}>添加第一个包</Button>
+                      {state.packages.length === 0 ? (
+                        <Button variant="outline" onClick={openNewEditor}>添加第一个包</Button>
+                      ) : (
+                        <Button variant="outline" onClick={() => { setSearch(''); setFilterKind('all'); }}>清除筛选</Button>
+                      )}
                     </div>
-                  )}
-                </div>
-              ) : (
-                <div className="ap-list">
-                  {filteredPackages.map(pkg => {
-                    if (editingInline && pkg.id === editingOriginalId) {
-                      return editorPanel;
-                    }
-                    const ver = summarizePackageVersions(pkg);
-                    const needsInstall = pkg.targets.some(h => ['not-installed', 'uninstalled', 'failed'].includes(pkg.harnessStatuses[h]?.status));
-                    const hasFailed = pkg.targets.some(h => pkg.harnessStatuses[h]?.status === 'failed');
-                    const hasInstalled = HARNESS_IDS.some(h => pkg.harnessStatuses[h]?.status === 'installed');
-                    const visibleHarnesses = HARNESS_IDS.filter(h => pkg.harnessStatuses[h]?.selected || pkg.harnessStatuses[h]?.status !== 'unselected');
-                    const showId = pkg.id.replace(/[^a-z0-9]/gi, '').toLowerCase() !== pkg.name.replace(/[^a-z0-9]/gi, '').toLowerCase();
-                    const menuOpen = openMenuId === pkg.id;
-                    const runMenuAction = payload => {
-                      setOpenMenuId('');
-                      void runAction(payload);
-                    };
-
-                    return (
-                      <article key={pkg.id} className="ap-card ap-pkg-card">
-                        <div className="ap-pkg-head">
-                          <div className="ap-pkg-info">
-                            <div className="ap-pkg-title-row">
-                              <span className="ap-pkg-title">{pkg.name}</span>
-                              <span className="ap-badge ap-badge-kind">{CARD_KIND_LABELS[pkg.kind] || pkg.kind}</span>
-                              {ver.hasUpdate ? (
-                                <span
-                                  className="ap-badge ap-badge-update"
-                                  title={`当前 ${ver.currentLabel || '未锁定'}，远端最新 ${ver.latestLabel}`}
-                                >
-                                  {ver.currentLabel ? `${ver.currentLabel} → ${ver.latestLabel}` : `可升级 → ${ver.latestLabel}`}
-                                </span>
-                              ) : ver.currentLabel ? (
-                                <span
-                                  className={`ap-badge ${ver.mixedVersions ? 'ap-badge-update' : 'ap-badge-ver'}`}
-                                  title={
-                                    ver.mixedVersions
-                                      ? '各端已装版本不一致，可点击「检查更新」或「升级」对齐'
-                                      : ver.isUpToDate
-                                        ? `已是最新（上次检查：${new Date(pkg.lock.checkedAt).toLocaleString()}）`
-                                        : `当前版本：${ver.currentLabel}`
-                                  }
-                                >
-                                  {ver.currentLabel}{ver.isUpToDate ? ' · 最新' : ''}
-                                </span>
-                              ) : (
-                                <span className="ap-badge">未锁定</span>
-                              )}
-                              {pkg.lock.checkError && (
-                                <span className="ap-badge ap-badge-err" title={pkg.lock.checkError}>检查失败</span>
-                              )}
-                            </div>
-                            <div className="ap-pkg-meta">
-                              {pkg.repo && (
-                                isHttpUrl(pkg.repo) ? (
-                                  <a href={pkg.repo} target="_blank" rel="noreferrer">{pkg.repo.replace(/^https:\/\/github\.com\//, '')}</a>
-                                ) : (
-                                  <span className="ap-meta-path" title={pkg.repo}>{pkg.repo}</span>
-                                )
-                              )}
-                              {showId && <span>ID: <code>{pkg.id}</code></span>}
-                              {pkg.npmPackage && <span>npm: <code>{pkg.npmPackage}</code></span>}
-                            </div>
-                            {pkg.description && <p className="ap-pkg-desc">{pkg.description}</p>}
+                  </div>
+                ) : (
+                  <div className="ap-list ap-matrix">
+                    <MatrixHead />
+                    {attentionRows.length > 0 && (
+                      <div className="ap-matrix-group is-attention">
+                        <h3>需要处理 <span className="ap-group-count">{attentionRows.length}</span></h3>
+                        {!filtering && (
+                          <div className="ap-actions">
+                            {needsGlobalSync && (
+                              <Button variant="outline" disabled={busy} onClick={() => void runAction({ type: 'packages.syncAll', dryRun: false }, { key: 'packages.syncAll' })}>
+                                {busyLabel('packages.syncAll', '全部同步', '同步中…')}
+                              </Button>
+                            )}
+                            {state.summary.outdated > 0 && (
+                              <Button variant="outline" disabled={busy} onClick={() => void runAction({ type: 'packages.upgradeAll', dryRun: false }, { key: 'packages.upgradeAll' })}>
+                                {busyLabel('packages.upgradeAll', `全部升级（${state.summary.outdated}）`, '升级中…')}
+                              </Button>
+                            )}
                           </div>
-
-                          <div className="ap-pkg-actions">
-                            {needsInstall ? (
-                              <Button
-                                variant="outline"
-                                disabled={busy}
-                                onClick={() => void runAction({ type: 'package.install', id: pkg.id })}
-                              >
-                                {hasFailed ? '重试安装' : '安装'}
-                              </Button>
-                            ) : ver.hasUpdate ? (
-                              <Button
-                                variant="outline"
-                                disabled={busy}
-                                onClick={() => void runAction({ type: 'package.upgrade', id: pkg.id })}
-                              >
-                                升级
-                              </Button>
-                            ) : null}
-                            <Button variant="outline" disabled={busy} onClick={() => openEditEditor(pkg)}>编辑</Button>
-                            <div className="ap-menu-wrap">
-                              <Button
-                                variant="outline"
-                                disabled={busy}
-                                aria-haspopup="menu"
-                                aria-expanded={menuOpen}
-                                aria-label={`${pkg.name} 更多操作`}
-                                onClick={() => setOpenMenuId(menuOpen ? '' : pkg.id)}
-                              >
-                                更多 ▾
-                              </Button>
-                              {menuOpen && (
-                                <div className="ap-menu-pop" role="menu" aria-label={`${pkg.name} 操作菜单`}>
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="ap-menu-item"
-                                    onClick={() => runMenuAction({ type: 'packages.checkUpdates', ids: [pkg.id] })}
-                                  >
-                                    检查更新
-                                  </button>
-                                  {needsInstall && ver.hasUpdate && (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      className="ap-menu-item"
-                                      onClick={() => runMenuAction({ type: 'package.upgrade', id: pkg.id })}
-                                    >
-                                      升级到 {ver.latestLabel}
-                                    </button>
-                                  )}
-                                  {!needsInstall && (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      className="ap-menu-item"
-                                      onClick={() => runMenuAction({ type: 'package.install', id: pkg.id })}
-                                    >
-                                      重新同步
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    role="menuitem"
-                                    className="ap-menu-item"
-                                    onClick={() => runMenuAction({ type: 'package.install', id: pkg.id, dryRun: true })}
-                                  >
-                                    预览变更
-                                  </button>
-                                  <hr className="ap-menu-sep" />
-                                  {hasInstalled ? (
-                                    <>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        className="ap-menu-item"
-                                        title="从各 Harness 卸载文件，但在清单中保留此配置"
-                                        onClick={() => runMenuAction({ type: 'package.uninstall', id: pkg.id })}
-                                      >
-                                        仅从各端卸载
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        className="ap-menu-item"
-                                        title="从清单删除记录，不改动本机已安装文件"
-                                        onClick={() => runMenuAction({ type: 'package.delete', id: pkg.id, uninstallFirst: false })}
-                                      >
-                                        仅从清单移除
-                                      </button>
-                                      <button
-                                        type="button"
-                                        role="menuitem"
-                                        className="ap-menu-item ap-menu-danger"
-                                        title="从各 Harness 卸载并从清单删除记录"
-                                        onClick={() => runMenuAction({ type: 'package.delete', id: pkg.id, uninstallFirst: true })}
-                                      >
-                                        卸载并移除
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      role="menuitem"
-                                      className="ap-menu-item ap-menu-danger"
-                                      onClick={() => runMenuAction({ type: 'package.delete', id: pkg.id, uninstallFirst: false })}
-                                    >
-                                      从清单移除
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="ap-harness-row" aria-label={`${pkg.name} 各 Harness 状态`}>
-                          {visibleHarnesses.length === 0 ? (
-                            <span className="ap-help" style={{ marginTop: 0 }}>未选择目标端</span>
-                          ) : visibleHarnesses.map(harnessId => {
-                            const hs = pkg.harnessStatuses[harnessId];
-                            const verText = formatHarnessVersion(hs);
-                            const chipMeta = hs.status === 'installed'
-                              ? (verText || '已安装')
-                              : statusLabel(hs.status);
-                            const tooltip = [
-                              `${HARNESS_META[harnessId].label}：${statusLabel(hs.status)}`,
-                              verText ? `版本 ${verText}` : '',
-                              hs.method === 'command' ? '自定义命令' : '',
-                              hs.lastError ? `错误：${hs.lastError}` : '',
-                            ].filter(Boolean).join(' · ');
-                            return (
-                              <span
-                                key={harnessId}
-                                className={`ap-chip ${hs.selected ? '' : 'ap-chip-muted'}`}
-                                title={tooltip}
-                              >
-                                <span className={dotClass(hs.status)} />
-                                <span>{HARNESS_META[harnessId].label}</span>
-                                <span className={`ap-chip-meta ${hs.status === 'installed' && verText ? 'ap-chip-ver' : ''}`}>
-                                  {chipMeta}
-                                  {hs.selected && hs.method === 'command' ? ' · 命令' : ''}
-                                </span>
-                              </span>
-                            );
-                          })}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
-              )}
+                        )}
+                      </div>
+                    )}
+                    {attentionRows.map(renderRow)}
+                    {readyRows.length > 0 && (
+                      <div className="ap-matrix-group">
+                        <h3>{attentionRows.length > 0 ? '已就绪' : '全部已就绪'} <span className="ap-group-count">{readyRows.length}</span></h3>
+                      </div>
+                    )}
+                    {readyRows.map(renderRow)}
+                  </div>
+                )}
+                {log?.tab === 'packages' && <LogPanel log={log} onClear={() => setLog(null)} />}
               </>
             );
           })()}
@@ -1853,7 +1971,7 @@ export function PackagesPage() {
                           disabled={busy}
                           onClick={() => void saveInstructionsAction({ syncNow: false })}
                         >
-                          仅保存
+                          {busyLabel('instr:save', '仅保存', '保存中…')}
                         </Button>
                       </>
                     )}
@@ -1865,7 +1983,7 @@ export function PackagesPage() {
                         title="写入所有 Harness 的指令文件"
                         onClick={() => void saveInstructionsAction({ syncNow: true, dryRun: false })}
                       >
-                        {instrDirty ? '保存并同步' : '同步'}
+                        {busyLabel('instr:sync', instrDirty ? '保存并同步' : '同步', '同步中…')}
                       </Button>
                     )}
                   </div>
@@ -1991,57 +2109,83 @@ export function PackagesPage() {
                     </details>
                   </article>
                 )}
+                {log?.tab === 'instructions' && <LogPanel log={log} onClear={() => setLog(null)} />}
               </section>
             );
           })()}
 
           {tab === 'doctor' && (() => {
-            const availableHarnesses = HARNESS_IDS.filter(id => scanReport?.harnesses?.[id]);
-            const activeHarness = availableHarnesses.includes(doctorHarness)
-              ? doctorHarness
-              : (availableHarnesses[0] || HARNESS_IDS[0]);
-            const info = scanReport?.harnesses?.[activeHarness] || null;
-            const harnessOptions = availableHarnesses.map(harnessId => {
-              const h = scanReport.harnesses[harnessId];
-              const stats = [`Skills ${h.skillsCount}`, `MCP ${h.mcpCount}`];
-              if (h.pluginsCount > 0) stats.push(`插件 ${h.pluginsCount}`);
+            const report = scanReport;
+            const harnesses = report?.harnesses || {};
+            // 把 4 端的 MCP / 插件按名称并成一张表，一眼看出分布与未纳管项
+            const collect = (listOf, keyOf, labelOf) => {
+              const rows = new Map();
+              for (const h of HARNESS_IDS) {
+                for (const item of listOf(harnesses[h]) || []) {
+                  const key = keyOf(item);
+                  if (!rows.has(key)) rows.set(key, { key, label: labelOf(item), byHarness: {}, managedBy: null, unmanaged: false });
+                  const row = rows.get(key);
+                  if (labelOf(item).length > row.label.length) row.label = labelOf(item);
+                  row.byHarness[h] = item;
+                  if (item.managedBy) row.managedBy = item.managedBy;
+                  else row.unmanaged = true;
+                }
+              }
+              return [...rows.values()].sort((x, y) => x.key.localeCompare(y.key));
+            };
+            const mcpRows = collect(h => h?.mcpServers, item => item.serverName, item => item.serverName);
+            // Antigravity 插件没有市场名，按插件名合并才能落在同一行；shortcut: 不同市场的同名插件会并成一行，出现时再按 repo 区分
+            const pluginRows = collect(h => h?.plugins, item => item.name, item => (item.marketplace ? `${item.name}@${item.marketplace}` : item.name));
+            const unmanagedCount = [...mcpRows, ...pluginRows].filter(row => row.unmanaged).length;
+            const cellsFor = (row, describe, errorOf) => HARNESS_IDS.map(h => {
+              const item = row.byHarness[h];
+              const readError = !item && errorOf ? errorOf(h) : '';
               return {
-                value: harnessId,
-                label: HARNESS_META[harnessId].label,
-                meta: stats.join(' · '),
+                harnessId: h,
+                status: item ? (item.managedBy ? 'managed' : 'unmanaged') : readError ? 'failed' : 'none',
+                label: `${HARNESS_META[h].label}：${item ? `${item.managedBy ? '受管' : '未纳管'}${describe(item)}` : readError ? `配置读取失败：${readError}` : '未配置'}`,
               };
             });
+            const renderRows = (rows, describe, errorOf) => rows.map(row => (
+              <div key={row.key} className="ap-matrix-row">
+                <div className="ap-row-main"><code className="ap-doctor-name">{row.label}</code></div>
+                <MatrixCells cells={cellsFor(row, describe, errorOf)} ariaLabel={`${row.label} 各端分布`} />
+                <span className={`ap-badge ${row.unmanaged ? '' : 'ap-badge-ok'}`}>
+                  {row.unmanaged ? (row.managedBy ? '部分未纳管' : '未纳管') : `受管：${row.managedBy}`}
+                </span>
+              </div>
+            ));
 
             return (
-              <section aria-label="本机扫描与诊断">
-                <div className="ap-actions" style={{ marginBottom: 12 }}>
-                  <Button
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void runAction({ type: 'local.scan' }, { onSuccess: res => setScanReport(res.report) })}
-                  >
-                    {scanReport ? '重新扫描' : '开始扫描'}
-                  </Button>
-                  {scanReport && (
-                    <span className="ap-help" style={{ marginTop: 0 }}>
-                      上次扫描：{new Date(scanReport.scannedAt).toLocaleString()}
-                    </span>
-                  )}
+              <section className="ap-doctor" aria-label="本机扫描与诊断">
+                <div className="ap-toolbar">
+                  <span className="ap-help ap-toolbar-note">
+                    {report
+                      ? `上次扫描：${new Date(report.scannedAt).toLocaleString()}`
+                      : '只读检查本机 4 个 Harness 的 Skills、插件与 MCP 配置，不做任何修改。'}
+                  </span>
+                  <div className="ap-actions ap-toolbar-actions">
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void runAction({ type: 'local.scan' }, { key: 'local.scan', onSuccess: res => setScanReport(res.report) })}
+                    >
+                      {busyLabel('local.scan', report ? '重新扫描' : '开始扫描', '扫描中…')}
+                    </Button>
+                  </div>
                 </div>
 
-                {!scanReport ? (
-                  <p className="ap-help" role="status">
-                    {busy
-                      ? '正在扫描本机 4 个 Harness 配置…'
-                      : '尚未扫描。点击「开始扫描」只读检查本机 4 个 Harness 的 Skills、插件与 MCP 配置。'}
+                {!report ? (
+                  <p className="ap-empty" role="status">
+                    {busy ? '正在扫描本机 4 个 Harness 配置…' : '尚未扫描。点击「开始扫描」查看各端已装内容与异常。'}
                   </p>
                 ) : (
                   <>
-                    {scanReport.warnings.length > 0 && (
-                      <div className="ap-card" style={{ marginBottom: 12 }}>
-                        <h3 style={{ fontSize: 14, marginBottom: 8 }}>诊断提示（{scanReport.warnings.length}）</h3>
+                    {report.warnings.length > 0 && (
+                      <div className="ap-card ap-doctor-warnings">
+                        <h3>诊断提示 <span className="ap-group-count">{report.warnings.length}</span></h3>
                         <ul className="ap-mini-list">
-                          {scanReport.warnings.map((item, idx) => (
+                          {report.warnings.map((item, idx) => (
                             <li key={idx}>
                               <span>
                                 <span className="ap-badge ap-badge-update" style={{ marginRight: 8 }}>
@@ -2055,131 +2199,52 @@ export function PackagesPage() {
                       </div>
                     )}
 
-                    {info && (
-                      <article className="ap-card ap-doctor-card" aria-label={`${HARNESS_META[activeHarness].label} 本机配置`}>
-                        <div className="ap-doctor-head">
-                          <div className="ap-doctor-switcher">
-                            <label htmlFor="ap-doctor-harness" className="ap-sr-only">选择 Harness</label>
-                            <Select
-                              id="ap-doctor-harness"
-                              ariaLabel="选择 Harness"
-                              className="ap-doctor-select"
-                              value={activeHarness}
-                              options={harnessOptions}
-                              onChange={setDoctorHarness}
-                            />
-                          </div>
-                          <div className="ap-doctor-stats">
-                            <span className="ap-badge">Skills: {info.skillsCount}</span>
-                            <span className="ap-badge">MCP: {info.mcpCount}</span>
-                            {info.pluginsCount > 0 && <span className="ap-badge">插件: {info.pluginsCount}</span>}
-                          </div>
-                        </div>
-
-                        <div className="ap-doctor-paths">
-                          <div className="ap-doctor-path-row">
-                            <span className="ap-doctor-path-label">Skills 目录</span>
-                            <code>{info.skillsDir}</code>
-                          </div>
-                          {info.mcpFile && (
-                            <div className="ap-doctor-path-row">
-                              <span className="ap-doctor-path-label">MCP 文件</span>
-                              <code>{info.mcpFile}</code>
-                            </div>
-                          )}
-                          {info.instructionsFile && (
-                            <div className="ap-doctor-path-row">
-                              <span className="ap-doctor-path-label">指令文件</span>
-                              <code>{info.instructionsFile}</code>
-                            </div>
-                          )}
-                        </div>
-
-                        {info.mcpError && (
-                          <p className="ap-field-error" role="alert">MCP 配置解析失败：{info.mcpError}</p>
-                        )}
-
-                        {info.mcpServers.length > 0 && (
-                          <div className="ap-doctor-group">
-                            <h4>MCP Servers（{info.mcpServers.length}）</h4>
-                            <ul className="ap-mini-list">
-                              {info.mcpServers.map(server => (
-                                <li key={server.serverName}>
-                                  <span><code>{server.serverName}</code>（{server.transport}）</span>
-                                  <span className={`ap-badge ${server.managedBy ? 'ap-badge-ok' : ''}`}>
-                                    {server.managedBy ? `受管:${server.managedBy}` : '未纳管'}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {info.plugins?.length > 0 && (
-                          <div className="ap-doctor-group">
-                            <h4>已装插件（{info.plugins.length}）</h4>
-                            <ul className="ap-mini-list">
-                              {info.plugins.map(plugin => (
-                                <li key={`${plugin.name}@${plugin.marketplace}`}>
-                                  <span>
-                                    <code>{plugin.marketplace ? `${plugin.name}@${plugin.marketplace}` : plugin.name}</code>
-                                    {plugin.version ? `（${plugin.version}）` : ''}
-                                  </span>
-                                  <span className={`ap-badge ${plugin.managedBy ? 'ap-badge-ok' : ''}`}>
-                                    {plugin.managedBy ? `受管:${plugin.managedBy}` : '未纳管'}
-                                  </span>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-
-                        {info.mcpServers.length === 0 && !(info.plugins?.length > 0) && (
-                          <p className="ap-help ap-doctor-empty">该端暂无已配置的 MCP Server 或已装插件。</p>
-                        )}
-                      </article>
+                    <div className="ap-list ap-matrix ap-doctor-matrix" aria-label="各端已装内容">
+                      <MatrixHead />
+                      <div className="ap-matrix-row">
+                        <div className="ap-row-main"><span>Skills</span></div>
+                        <MatrixCells
+                          ariaLabel="各端 Skills 数量"
+                          cells={HARNESS_IDS.map(h => ({
+                            harnessId: h,
+                            text: harnesses[h]?.skillsCount ?? 0,
+                            label: `${HARNESS_META[h].label}：${harnesses[h]?.skillsCount ?? 0} 个 Skills`,
+                          }))}
+                        />
+                        <span />
+                      </div>
+                      <div className="ap-matrix-group">
+                        <h3>MCP Servers <span className="ap-group-count">{mcpRows.length}</span></h3>
+                      </div>
+                      {mcpRows.length ? renderRows(mcpRows, item => `（${item.transport}）`, h => harnesses[h]?.mcpError || '') : <p className="ap-matrix-empty">各端均未配置 MCP Server。</p>}
+                      <div className="ap-matrix-group">
+                        <h3>已装插件 <span className="ap-group-count">{pluginRows.length}</span></h3>
+                      </div>
+                      {pluginRows.length ? renderRows(pluginRows, item => (item.version ? ` ${item.version}` : '')) : <p className="ap-matrix-empty">各端均未安装插件。</p>}
+                    </div>
+                    {unmanagedCount > 0 && (
+                      <p className="ap-help">{unmanagedCount} 项不在清单中。需要统一管理时，用「添加包」添加同一来源，已装的插件不会重复安装。</p>
                     )}
+
+                    <details className="ap-section ap-advanced ap-doctor-paths-wrap">
+                      <summary>各端本机路径</summary>
+                      <div className="ap-doctor-paths">
+                        {HARNESS_IDS.filter(h => harnesses[h]).map(h => (
+                          <div key={h} className="ap-doctor-path-block">
+                            <strong>{HARNESS_META[h].label}</strong>
+                            <div className="ap-doctor-path-row"><span className="ap-doctor-path-label">Skills 目录</span><code>{harnesses[h].skillsDir}</code></div>
+                            {harnesses[h].mcpFile && <div className="ap-doctor-path-row"><span className="ap-doctor-path-label">MCP 文件</span><code>{harnesses[h].mcpFile}</code></div>}
+                            {harnesses[h].instructionsFile && <div className="ap-doctor-path-row"><span className="ap-doctor-path-label">指令文件</span><code>{harnesses[h].instructionsFile}</code></div>}
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   </>
                 )}
+                {log?.tab === 'doctor' && <LogPanel log={log} onClear={() => setLog(null)} />}
               </section>
             );
           })()}
-
-          {logs.length > 0 && (
-            <section className="ap-logs" aria-label="最近执行记录">
-              <div className="ap-logs-head">
-                <h3>最近执行记录（{logs.length} 步）</h3>
-                <Button variant="outline" onClick={() => setLogs([])}>清空记录</Button>
-              </div>
-              <div className="ap-log-list">
-                {logs.map((step, index) => (
-                  <div key={index} className="ap-log-item">
-                    <div className="ap-log-top">
-                      <span className={stepBadgeClass(step.status)}>{step.status}</span>
-                      {step.packageName && <strong>{step.packageName}</strong>}
-                      <span className="ap-badge">
-                        {step.harness === 'shared'
-                          ? '全局 CLI'
-                          : step.harness === 'repo'
-                            ? '仓库'
-                            : step.harness === 'instructions'
-                              ? '全局指令'
-                              : (HARNESS_META[step.harness]?.label || step.harness)}
-                      </span>
-                      <span>{step.detail}</span>
-                    </div>
-                    {step.command && <pre className="ap-log-out">$ {step.command}</pre>}
-                    {step.output && <pre className="ap-log-out">{step.output}</pre>}
-                    {step.warnings?.length > 0 && (
-                      <p className="ap-help" style={{ color: 'var(--ap-warn)' }}>
-                        提示：{step.warnings.join('；')}
-                      </p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
 
           <details className="ap-footer-paths">
             <summary>配置文件路径</summary>
