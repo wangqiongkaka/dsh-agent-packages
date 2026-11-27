@@ -100,7 +100,7 @@
   min-width: 0;
 }
 .ap-select-wrap.is-open { z-index: 30; }
-.ap-filter-select { width: auto; min-width: 124px; flex-shrink: 0; }
+
 .ap-select-trigger {
   appearance: none;
   display: inline-flex;
@@ -307,30 +307,6 @@
   color: var(--ap-error);
 }
 
-.ap-pkg-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  margin-top: 5px;
-  font-size: 12px;
-  color: var(--ap-muted);
-}
-.ap-pkg-meta a {
-  color: var(--ap-accent);
-  text-decoration: none;
-  overflow-wrap: anywhere;
-}
-.ap-pkg-meta a:hover { text-decoration: underline; }
-.ap-meta-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow-wrap: anywhere;
-}
-.ap-pkg-desc {
-  margin-top: 5px;
-  font-size: 13px;
-  color: var(--ap-muted);
-}
-
 .ap-pkg-actions {
   display: flex;
   flex-wrap: wrap;
@@ -372,18 +348,6 @@
 .ap-menu-item:focus-visible {
   background: color-mix(in srgb, var(--ap-accent) 14%, transparent);
 }
-.ap-menu-danger {
-  color: var(--ap-error);
-}
-.ap-menu-danger:hover,
-.ap-menu-danger:focus-visible {
-  background: color-mix(in srgb, var(--ap-error) 14%, transparent);
-}
-.ap-menu-sep {
-  border: 0;
-  border-top: 1px solid var(--ap-line);
-  margin: 4px 2px;
-}
 
 .ap-editor {
   margin-bottom: 16px;
@@ -400,22 +364,7 @@
   margin-bottom: 14px;
 }
 .ap-editor-head h3 { font-size: 15px; font-weight: 600; }
-.ap-inspect-row {
-  display: flex;
-  gap: 10px;
-  align-items: end;
-  margin-bottom: 8px;
-}
-.ap-inspect-row > div { flex: 1; min-width: 0; }
-.ap-analyzer-hint {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: var(--ap-muted);
-}
+
 .ap-link-btn {
   appearance: none;
   border: 0;
@@ -427,47 +376,7 @@
 }
 .ap-link-btn:hover:not(:disabled) { text-decoration: underline; }
 .ap-link-btn:disabled { opacity: 0.5; cursor: default; }
-.ap-settings-card {
-  margin: 0 0 12px;
-  padding: 12px;
-  border: 1px solid color-mix(in srgb, var(--ap-accent) 40%, transparent);
-  border-radius: 8px;
-}
-.ap-settings-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 8px;
-  margin-bottom: 10px;
-}
-.ap-settings-head h4 { margin: 0; font-size: 13px; font-weight: 600; }
-.ap-settings-head .ap-help { margin-top: 0; }
-.ap-settings-card .ap-editor-footer { margin-top: 10px; padding-top: 10px; }
-.ap-ai-evidence {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed color-mix(in srgb, var(--ap-accent) 30%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.ap-ai-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 8px;
-  color: var(--ap-text);
-  overflow-wrap: anywhere;
-}
-.ap-ai-warnings {
-  margin: 0;
-  padding-left: 16px;
-  color: var(--ap-warn);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  overflow-wrap: anywhere;
-}
+
 .ap-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ap-field label { font-size: 12px; font-weight: 500; color: var(--ap-muted); }
 .ap-kv-head {
@@ -490,9 +399,7 @@
 .ap-kv-key {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.ap-kv-remove {
-  height: 36px;
-}
+
 /* 按面板实际宽度自动分列（DSH 设置页可能只有 500px 左右），同行输入框底部对齐 */
 .ap-grid {
   display: grid;
@@ -541,15 +448,7 @@
 .ap-advanced summary .ap-help { margin-top: 0; font-weight: 400; }
 .ap-advanced[open] summary { margin-bottom: 12px; }
 .ap-advanced h4 { margin-top: 16px; }
-.ap-cmd-card {
-  padding: 10px;
-  border: 1px solid var(--ap-line);
-  border-radius: 7px;
-  margin-bottom: 8px;
-}
-.ap-cmd-card:last-child { margin-bottom: 0; }
-.ap-cmd-card strong { display: block; font-size: 12px; margin-bottom: 6px; }
-.ap-cmd-card .ap-grid { margin-bottom: 0; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+
 .ap-editor-footer {
   display: flex;
   flex-wrap: wrap;
@@ -558,14 +457,6 @@
   margin-top: 14px;
   padding-top: 12px;
   border-top: 1px solid var(--ap-line);
-}
-.ap-evidence {
-  margin-bottom: 12px;
-  padding: 9px 11px;
-  border-radius: 7px;
-  border: 1px solid color-mix(in srgb, var(--ap-accent) 35%, transparent);
-  font-size: 12px;
-  color: var(--ap-muted);
 }
 
 .ap-logs {
@@ -671,53 +562,6 @@
   gap: 4px 6px;
 }
 
-.ap-instr-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.ap-instr-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px 12px;
-}
-.ap-instr-toolbar > .ap-actions {
-  margin-left: auto;
-}
-.ap-instr-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-}
-.ap-instr-card {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.ap-instr-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-.ap-instr-heading {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.ap-instr-toolbar h3,
-.ap-instr-card h3 {
-  font-size: 15px;
-  font-weight: 600;
-}
-.ap-instr-sub {
-  font-size: 12px;
-  color: var(--ap-muted);
-}
 .ap-instr-harness-select {
   width: auto;
   min-width: 150px;
@@ -728,14 +572,7 @@
   color: var(--ap-muted);
   overflow-wrap: anywhere;
 }
-.ap-instr-menu {
-  min-width: 200px;
-}
-.ap-instr-menu .ap-menu-item {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
+
 .ap-menu-item:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -748,14 +585,7 @@
   line-height: 1.55;
   tab-size: 2;
 }
-.ap-instr-editor-private {
-  min-height: 130px;
-}
-.ap-instr-warn-text {
-  color: var(--ap-warn);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
+
 .ap-instr-preview {
   margin: 0;
   padding: 10px 12px;
@@ -770,10 +600,7 @@
 }
 
 @media (max-width: 720px) {
-  .ap-inspect-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
+  
   .ap-search { max-width: none; }
 }
 @media (max-width: 520px) {
@@ -861,7 +688,7 @@
 .ap-cell-label { display: none; }
 .ap-cell-num { font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ap-glyph { flex-shrink: 0; }
-.ap-chip-meta { color: var(--ap-muted); }
+
 .ap-glyph-ok { color: var(--ap-success); }
 .ap-glyph-present { color: color-mix(in srgb, var(--ap-text) 70%, transparent); }
 .ap-glyph-pending { color: var(--ap-warn); }
@@ -910,15 +737,7 @@
 .ap-row-toggle:hover .ap-pkg-title { text-decoration: underline; text-underline-offset: 3px; }
 .ap-row-chevron { flex-shrink: 0; color: var(--ap-muted); transition: transform 150ms ease; }
 .ap-row-toggle[aria-expanded="true"] .ap-row-chevron { transform: rotate(90deg); }
-.ap-row-reason {
-  grid-column: 1 / -1;
-  margin-top: 4px;
-  padding-left: 18px;
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-.ap-row-reason.is-error { color: var(--ap-error); }
-.ap-row-reason.is-warn { color: var(--ap-warn); }
+
 .ap-pkg-actions { flex-wrap: nowrap; }
 
 .ap-confirm {
@@ -944,13 +763,10 @@
   gap: 8px;
   padding: 8px 0 2px 18px;
 }
-.ap-row-detail .ap-pkg-meta,
-.ap-row-detail .ap-pkg-desc,
 .ap-row-detail .ap-mini-list { margin-top: 0; }
 .ap-detail-harness li { align-items: flex-start; }
 .ap-detail-name { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .ap-detail-state { text-align: right; color: var(--ap-muted); overflow-wrap: anywhere; }
-.ap-detail-error { display: block; color: var(--ap-error); }
 
 /* ---------- 本机诊断 ---------- */
 .ap-banner-notice.is-warn {
@@ -963,9 +779,10 @@
   .ap-matrix { display: flex; flex-direction: column; }
   .ap-col-head { display: none; }
   .ap-matrix-group { display: flex; }
+  .ap-row-detail.ap-catalog, .ap-catalog-list { display: flex; flex-direction: column; }
   .ap-matrix-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
   .ap-matrix-row > .ap-cells { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; gap: 4px 14px; padding-left: 18px; }
-  .ap-matrix-row > .ap-row-reason { margin-top: 0; }
+  
   .ap-cell { width: auto; }
   .ap-cell-label { display: inline; font-size: 11px; color: var(--ap-muted); }
 }
@@ -997,8 +814,7 @@
 @keyframes ap-pulse { 50% { opacity: 0.3; } }
 
 /* ---------- Skills 分组与本机未纳管 ---------- */
-.ap-skill-row { padding-top: 6px; padding-bottom: 6px; }
-.ap-skill-row .ap-row-main { padding-left: 18px; }
+
 .ap-skill-name {
   display: block;
   min-width: 0;
@@ -1007,13 +823,10 @@
   white-space: nowrap;
   font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.ap-skill-row + .ap-skill-group,
-.ap-skill-row + .ap-matrix-group { border-top-color: var(--ap-line); }
+
 .ap-unmanaged-row .ap-row-main { display: flex; flex-direction: column; gap: 2px; }
 .ap-unmanaged-note { margin-top: 0; }
-.ap-confirm-row { padding-top: 0; border-top: 0; }
-.ap-local-notes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.ap-local-notes .ap-help { margin-top: 0; }
+
 .ap-warning-list { margin-top: 0; }
 
 /* ---------- 规则片段 ---------- */
@@ -1032,4 +845,35 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ap-switch.is-busy .ap-glyph { animation: none; }
+}
+
+/* ---------- 本机即真相：各视图补充 ---------- */
+.ap-view-note { margin: -4px 0 10px; }
+.ap-mono-title { font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.ap-field-label { font-size: 12px; font-weight: 500; color: var(--ap-muted); }
+.ap-detail-sub { display: block; font-size: 11px; }
+/* 市场里的插件行逐层继承外层三列，开关格子与上方各行对齐 */
+.ap-row-detail.ap-catalog { display: grid; grid-template-columns: subgrid; padding: 8px 0 0; }
+.ap-catalog > * { grid-column: 1 / -1; }
+.ap-catalog-list {
+  display: grid;
+  grid-template-columns: subgrid;
+  border-top: 1px solid color-mix(in srgb, var(--ap-line) 60%, transparent);
+}
+.ap-catalog-list > .ap-catalog-row { grid-column: 1 / -1; padding: 8px 0 8px 18px; }
+.ap-catalog-row .ap-row-main { display: flex; flex-direction: column; gap: 2px; }
+.ap-catalog-desc {
+  margin-top: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 来源徽章可收缩：长来源不挤掉名称 */
+.ap-pkg-card .ap-pkg-title-row > .ap-badge-source {
+  display: inline-block;
+  flex-shrink: 4;
+  min-width: 4em;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

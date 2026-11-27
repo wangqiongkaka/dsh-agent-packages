@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
-export { ENDPOINT, HEADER_KEY, PLUGIN_ID, HARNESS_IDS, ANALYZER_HARNESS_IDS, PACKAGE_KINDS, KIND_LABELS, HARNESS_META } from './shared.mjs';
+export { ENDPOINT, HEADER_KEY, PLUGIN_ID, HARNESS_IDS, HARNESS_META } from './shared.mjs';
 
 function resolveConfigPath(raw, home) {
   const trimmed = typeof raw === 'string' ? raw.trim() : '';

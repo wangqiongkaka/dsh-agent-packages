@@ -10,7 +10,7 @@ export const name = PLUGIN_ID;
 export const inject = [];
 
 export const Config = z.object({
-  root: z.string().default('').description('包清单与仓库缓存目录；默认 <DSH_HOME>/dsh-agent-packages'),
+  root: z.string().default('').description('规则片段与回收目录的保存位置；默认 <DSH_HOME>/dsh-agent-packages'),
 });
 
 export async function apply(ctx, config = {}) {

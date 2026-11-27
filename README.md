@@ -1,22 +1,16 @@
 # dsh-agent-packages
 
-面向 DeepSeek Harness（DSH）的多 Harness 统一管理插件：在 Codex、Claude Code、Antigravity、DSH 原生之间统一管理 Skills、MCP、插件与规则（全局指令）。
+面向 DeepSeek Harness（DSH）的多 Harness 统一管理插件：在 Codex、Claude Code、Antigravity、DSH 原生之间查看并同步 Skills、MCP、插件与规则（全局指令）。
 
 ## 核心能力
 
-- **单一清单 + 锁文件**：在 `<DSH_HOME>/dsh-agent-packages/` 下维护 `packages.json` 与 `packages.lock.json`，不强制搬运所有文件，按各 Harness 各自机制安装与升级。
-- **支持 4 个 Harness 目标**：Codex（`~/.codex/skills`、`~/.codex/config.toml`）、Claude Code（默认 `~/.claude/skills`、`~/.claude.json`；当 `dsh-harness-provider` 设置了 `claudeConfigDir`、环境变量设置了 `CLAUDE_CONFIG_DIR` 或使用 `reclaude` 时，统一读取该配置目录下的 `skills/`、`.claude.json`、`plugins/`）、Antigravity（`~/.gemini/config/skills`、`~/.gemini/config/mcp_config.json`）、DSH 原生（`~/.dsh/skills`）。
-- **四种包类型**：
-  1. `skills-repo`：指定 GitHub 仓库与 `ref`（Tag/分支/Commit），自动检出并将发现的 `SKILL.md` 软链或复制到目标 Harness；卸载时仅清理受管路径。
-  2. `plugin`：插件式 Skills（如 ponytail），仓库带 `.claude-plugin/`、`.codex-plugin/` 或 `.agents/plugins/` 清单。安装、升级、卸载调用各 Harness 自己的插件命令（`claude plugin`、`codex plugin`、`agy plugin`），Claude Code 端沿用 dsh-harness-provider 统一配置的 `claudeCommand`（如 `reclaude`）与 `claudeConfigDir`（执行命令时自动透传 `CLAUDE_CONFIG_DIR`；未显式配置且命令为 `reclaude` 时按其当前账号目录自动兜底）。插件声明的 Hooks、命令与 Skills 由 Harness 一并注册和清理，本插件不直接改写 hooks 配置。插件已装在某端时，「安装」「全部同步」和重复添加都不会再次执行安装命令。Codex 需在 `/hooks` 中信任插件 Hooks 后生效；DSH 原生暂无插件机制，会跳过。
-  3. `mcp`：关联 GitHub 仓库与锁定版本号，支持 `{{version}}` 模板变量，安全局部更新 Codex TOML（保留原注释与其他节）和 Claude / Antigravity JSON（原子写入、不覆盖运行时状态）。
-  4. `installer`：针对自带 CLI 与多端安装器生命周期的复合项目（如 CodeGraph），支持配置每次操作仅执行一次的全局 CLI 命令（`install` / `upgrade` / `uninstall` / `version` 版本检测）以及各 Harness 的分端接入与卸载命令；全部端卸载完成后才执行全局卸载命令。
-- **GitHub 仓库解析与 AI 深度分析**：默认通过静态规则快速识别仓库类型（区分项目自用 `.claude/skills` 与对外分发的 Skills）、最新 Release / Commit、Skills 列表、插件清单及其 Hooks、npm/Python 包与 CLI 安装器命令；也支持在「添加包」面板的「当前解析 · 切换」中全局指定 Codex / Claude Code / Antigravity 及模型，点击「解析仓库」时浅克隆仓库到隔离临时目录进行只读深度分析，为复合型仓库生成各端安装、升级、卸载与版本检测草稿（仅回填供审阅，绝不自动执行）。
-- **条目 × 端矩阵**：管理页分 Skills / MCP / 插件 / 规则 4 个视图，每行一个条目、右侧 4 列对齐各端；格子是开关，点亮即安装或同步到该端，熄灭先行内确认再卸载，只有该端步骤成功才翻转。Skills 按来源分组、逐个 Skill × 单端开关（`skills.perHarness`）；复合安装器（如 CodeGraph）与插件同列为「CLI 工具」。
-- **纳管本机已有条目**：打开页面即只读扫描本机，各视图列出「本机未纳管」的 Skills / MCP / 插件 / 规则文件，「纳管」只登记进清单与锁文件，不重装、不改本机配置；MCP 保留原 key 与未建模字段（存入 `mcp.overrides`），Skill 以原目录为源归入「本机 Skills」组。由插件或安装器带来的条目标注「由 X 管理」，Codex 内置插件不列出。
-- **添加新条目**：粘贴 GitHub 地址解析后添加。添加时可以重命名（包 ID 留空时按名称生成，与已有包冲突时提示重命名）；保存前按包类型和插件清单检查各 Harness 是否支持，不支持的端显示原因，勾选后禁止保存（为该端填写自定义安装命令后可装）；同一来源再次添加只更新名称与目标端（锁定版本不变，版本变化走升级），不重复安装。
-- **规则片段（AGENTS.md / CLAUDE.md）**：规则由多条片段组成，保存在 `<DSH_HOME>/dsh-agent-packages/instructions/snippets.json`，每条片段用端开关决定写入 Codex（`~/.codex/AGENTS.md`）、Claude Code（`<claudeConfigDir>/CLAUDE.md`）、Antigravity（`~/.gemini/AGENTS.md`）、DSH 原生（`~/.dsh/AGENTS.md`）中的哪些端，各端文件严格等于开启片段按顺序拼接。保存时只写拼接结果有变化的端；首次读取时由旧的「公共内容 + 各端私有内容」自动迁移（拼接结果逐字节不变，旧文件保留）；本机文件可原样纳管为片段；不再自动保留外部工具注入的标记块（如 CodeGraph 的 `<!-- CODEGRAPH_START -->` 块），遇到软链目标自动拆分为独立文件原子写入且不改动原链接目标。
-- **统一版本检查与批量同步**：一键查更新、一键升级、支持 Dry-Run 预览变更；失效软链、旧版目录、MCP 配置读取失败等诊断提示显示在对应视图。
+- **本机配置即真相**：不维护清单与锁文件。页面每次读取 4 端（Codex、Claude Code、Antigravity、DSH 原生）的真实目录与配置文件，按名称合并列出 Skills、MCP 与插件；手工安装的条目刷新后即出现，可直接同步到其他端。只有规则片段由本插件存储（`<DSH_HOME>/dsh-agent-packages/instructions/snippets.json`）。
+- **条目 × 端矩阵**：Skills / MCP / 插件 / 规则 4 个视图，每行一个条目、右侧 4 列对齐各端，格子是开关：点亮立即同步，熄灭先行内确认；只有该端操作成功、且重新读取记录确认生效后才翻转。
+- **Skills**：开启某端 = 在该端 Skills 目录建软链指向已有内容（优先实体目录）；关闭软链直接删除，实体目录移入回收目录 `<DSH_HOME>/dsh-agent-packages/trash/`（不直接删除），仍被其他端软链引用的目录拒绝关闭。
+- **MCP**：读取 Codex `config.toml`、Claude Code `.claude.json`、Antigravity `mcp_config.json`；开启某端 = 把已有配置翻译成该端格式写入（环境变量引用 `${KEY}` 与 Codex `env_vars` 互转）；支持手工添加与编辑，写回时保留各端原有的未建模字段（如 `alwaysLoad`）。全部写入局部合并、原子替换。
+- **插件**：参照各端原生流程「先添加市场再安装插件」。Claude Code 用 `plugin marketplace add` / `plugin install|uninstall|update`（经 dsh-harness-provider 配置的 `claudeCommand` 与 `CLAUDE_CONFIG_DIR`），Codex 用 `plugin marketplace add|upgrade` / `plugin add|remove`，Antigravity 内置市场用 `plugin install 名称@市场`、其他市场用本地插件目录安装（agy 会转换 Claude Code 格式）。市场里的插件来自本地 `marketplace.json`，展开即可浏览并安装。所有 CLI 调用带超时、关闭 stdin，避免等待交互。
+- **规则（AGENTS.md / CLAUDE.md）**：规则由多条片段组成，开关决定写入哪些端，各端文件严格等于开启片段按顺序拼接；只写拼接结果有变化的端，覆盖外部修改前确认；本机文件可原样纳管为片段；旧的「公共 + 私有」内容自动迁移（逐字节一致，旧文件保留）。软链目标原子拆分为独立文件。
+- **不做的事**：不从 GitHub 安装 Skills / MCP、不解析仓库、不调用 AI 分析、不管理 CLI 工具（如 codegraph）的安装升级、不查 Skills / MCP 的远端版本。
 - **DSH 设置管理页**：挂载在「设置 → Skills & MCP」，支持桌面端与窄屏视图。
 
 ## 开发与热加载
