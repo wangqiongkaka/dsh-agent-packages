@@ -11,7 +11,18 @@ export function interpolateTemplate(text, vars = {}) {
 export function renderMcpConfigForHarness(harnessId, mcpSpec, vars = {}) {
   if (!isPlainObject(mcpSpec)) throw new Error('缺少 MCP 配置定义');
   const transport = mcpSpec.transport === 'http' ? 'http' : 'stdio';
-  const envRefs = Array.isArray(mcpSpec.envRefs) ? mcpSpec.envRefs.filter(Boolean) : [];
+  const env = {};
+  if (isPlainObject(mcpSpec.env)) {
+    for (const [key, value] of Object.entries(mcpSpec.env)) {
+      const trimmedKey = key.trim();
+      if (trimmedKey && typeof value === 'string' && value !== '') {
+        env[trimmedKey] = interpolateTemplate(value, vars);
+      }
+    }
+  }
+  const envRefs = Array.isArray(mcpSpec.envRefs)
+    ? [...new Set(mcpSpec.envRefs.map(item => String(item).trim()).filter(key => key && !(key in env)))]
+    : [];
   const headers = {};
   if (isPlainObject(mcpSpec.headers)) {
     for (const [key, value] of Object.entries(mcpSpec.headers)) {
@@ -33,13 +44,16 @@ export function renderMcpConfigForHarness(harnessId, mcpSpec, vars = {}) {
           command,
           ...(args.length ? { args } : {}),
           ...(envRefs.length ? { env_vars: envRefs } : {}),
+          ...(Object.keys(env).length ? { env } : {}),
           ...override,
         },
       };
     }
 
-    const env = {};
-    for (const name of envRefs) env[name] = `\${${name}}`;
+    const mergedEnv = {};
+    for (const name of envRefs) mergedEnv[name] = `\${${name}}`;
+    Object.assign(mergedEnv, env);
+    const hasEnv = Object.keys(mergedEnv).length > 0;
     if (harnessId === 'claude-code') {
       return {
         warnings,
@@ -47,7 +61,7 @@ export function renderMcpConfigForHarness(harnessId, mcpSpec, vars = {}) {
           type: 'stdio',
           command,
           args,
-          ...(envRefs.length ? { env } : {}),
+          ...(hasEnv ? { env: mergedEnv } : {}),
           ...override,
         },
       };
@@ -58,7 +72,7 @@ export function renderMcpConfigForHarness(harnessId, mcpSpec, vars = {}) {
         config: {
           command,
           args,
-          ...(envRefs.length ? { env } : {}),
+          ...(hasEnv ? { env: mergedEnv } : {}),
           ...override,
         },
       };

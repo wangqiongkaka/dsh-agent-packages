@@ -134,8 +134,15 @@ export function normalizePackage(input, existing) {
     : typeof mcpInput.args === 'string'
       ? mcpInput.args.split(/\s+/).filter(Boolean)
       : [];
+  const env = {};
+  if (isPlainObject(mcpInput.env)) {
+    for (const [k, v] of Object.entries(mcpInput.env)) {
+      const key = k.trim();
+      if (key && typeof v === 'string' && v !== '') env[key] = v;
+    }
+  }
   const envRefs = Array.isArray(mcpInput.envRefs)
-    ? [...new Set(mcpInput.envRefs.map(item => String(item).trim()).filter(Boolean))]
+    ? [...new Set(mcpInput.envRefs.map(item => String(item).trim()).filter(key => key && !(key in env)))]
     : [];
   const headers = {};
   if (isPlainObject(mcpInput.headers)) {
@@ -182,6 +189,7 @@ export function normalizePackage(input, existing) {
       args,
       url: String(mcpInput.url ?? '').trim(),
       envRefs,
+      env,
       headers,
       overrides,
     },

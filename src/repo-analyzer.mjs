@@ -347,6 +347,7 @@ export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl,
     envRefs: Array.isArray(analysis.mcp?.envRefs)
       ? [...new Set(analysis.mcp.envRefs.map(s => String(s).trim()).filter(Boolean))]
       : [],
+    env: baseDraft.mcp?.env ?? {},
     headers: baseDraft.mcp?.headers ?? {},
     overrides: baseDraft.mcp?.overrides ?? {},
   };

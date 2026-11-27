@@ -302,6 +302,14 @@ try {
   assert.equal(await page.locator('#ap-version').inputValue(), '0.0.28');
   // 折叠的「高级设置」摘要仍显示解析出的锁定版本
   assert.match(await page.locator('.ap-advanced summary').innerText(), /0\.0\.28/);
+  // 验证 MCP 环境变量 Key-Value 表单的新增、输入与删除
+  await page.locator('#ap-mcp-env-key-0').fill('FIRECRAWL_API_KEY');
+  await page.locator('#ap-mcp-env-val-0').fill('fc-demo-key');
+  await page.getByRole('button', { name: '添加变量' }).click();
+  await page.locator('#ap-mcp-env-key-1').fill('HTTPS_PROXY');
+  await page.getByRole('button', { name: '添加变量' }).click();
+  await page.getByRole('button', { name: '删除第 3 行环境变量' }).click();
+  assert.equal(await page.locator('.ap-kv-row').count(), 2, '删除后应保留 2 行环境变量');
   await page.screenshot({ path: 'artifacts/packages-editor.png', fullPage: true });
 
   // 编辑面板同一行的输入框顶部对齐（宽屏与 DSH 设置页常见的约 560px 宽度各检查一次）
@@ -322,10 +330,18 @@ try {
   assert.deepEqual(await misaligned(), [], '宽屏编辑面板输入框未对齐');
   const narrow = await page.addStyleTag({ content: '#app > div { max-width: 560px !important; }' });
   assert.deepEqual(await misaligned(), [], '窄面板编辑面板输入框未对齐');
+  await page.locator('.ap-editor').screenshot({ path: 'artifacts/packages-editor-panel.png' });
   await narrow.evaluate(el => el.remove());
 
   await page.getByRole('button', { name: '保存并安装' }).click();
   await page.getByText('playwright-mcp').first().waitFor();
+  // 重新打开编辑核对 Key-Value 与留空引用均正确回显
+  await page.locator('.ap-pkg-card', { hasText: 'playwright-mcp' }).getByRole('button', { name: '编辑' }).click();
+  assert.equal(await page.locator('#ap-mcp-env-key-0').inputValue(), 'FIRECRAWL_API_KEY');
+  assert.equal(await page.locator('#ap-mcp-env-val-0').inputValue(), 'fc-demo-key');
+  assert.equal(await page.locator('#ap-mcp-env-key-1').inputValue(), 'HTTPS_PROXY');
+  assert.equal(await page.locator('#ap-mcp-env-val-1').inputValue(), '');
+  await page.getByRole('button', { name: '收起' }).click();
 
   // 1b. 解析 CodeGraph 类 CLI 安装器仓库：校验自动识别为自定义安装器、填充全局与 4 端命令及对齐
   await page.getByRole('button', { name: '添加包' }).click();

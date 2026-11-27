@@ -80,7 +80,7 @@ function emptyDraft() {
       command: 'npx',
       argsText: '',
       url: '',
-      envRefsText: '',
+      envRows: [{ key: '', value: '' }],
     },
     plugin: { name: '', marketplace: '', harnesses: [] },
     commands: {},
@@ -88,6 +88,26 @@ function emptyDraft() {
 }
 
 function packageToDraft(pkg) {
+  const envRows = [];
+  if (pkg.mcp?.env && typeof pkg.mcp.env === 'object') {
+    for (const [key, value] of Object.entries(pkg.mcp.env)) {
+      if (key.trim() && typeof value === 'string') {
+        envRows.push({ key: key.trim(), value });
+      }
+    }
+  }
+  if (Array.isArray(pkg.mcp?.envRefs)) {
+    const seen = new Set(envRows.map(row => row.key));
+    for (const name of pkg.mcp.envRefs) {
+      const key = String(name).trim();
+      if (key && !seen.has(key)) {
+        seen.add(key);
+        envRows.push({ key, value: '' });
+      }
+    }
+  }
+  if (!envRows.length) envRows.push({ key: '', value: '' });
+
   return {
     id: pkg.id || '',
     name: pkg.name || '',
@@ -108,7 +128,7 @@ function packageToDraft(pkg) {
       command: pkg.mcp?.command || '',
       argsText: Array.isArray(pkg.mcp?.args) ? pkg.mcp.args.join(' ') : '',
       url: pkg.mcp?.url || '',
-      envRefsText: Array.isArray(pkg.mcp?.envRefs) ? pkg.mcp.envRefs.join(', ') : '',
+      envRows,
     },
     plugin: { name: pkg.plugin?.name || '', marketplace: pkg.plugin?.marketplace || '', harnesses: pkg.plugin?.harnesses || [] },
     commands: pkg.commands ? JSON.parse(JSON.stringify(pkg.commands)) : {},
@@ -124,10 +144,23 @@ function draftToPackage(draft) {
     .split(/\s+/)
     .map(item => item.trim())
     .filter(Boolean);
-  const envRefs = draft.mcp.envRefsText
-    .split(/[,，\s]+/)
-    .map(item => item.trim())
-    .filter(Boolean);
+  const env = {};
+  const envRefs = [];
+  const seenEnvKeys = new Set();
+  for (const row of draft.mcp.envRows || []) {
+    const key = String(row.key ?? '').trim();
+    if (!key) continue;
+    const val = String(row.value ?? '');
+    if (val.trim() !== '') {
+      env[key] = val;
+      const refIdx = envRefs.indexOf(key);
+      if (refIdx >= 0) envRefs.splice(refIdx, 1);
+      seenEnvKeys.add(key);
+    } else if (!seenEnvKeys.has(key)) {
+      envRefs.push(key);
+      seenEnvKeys.add(key);
+    }
+  }
   return {
     id: draft.id.trim(),
     name: draft.name.trim(),
@@ -149,6 +182,7 @@ function draftToPackage(draft) {
       args,
       url: draft.mcp.url.trim(),
       envRefs,
+      env,
     },
     plugin: { name: draft.plugin.name.trim(), marketplace: draft.plugin.marketplace.trim(), harnesses: draft.plugin.harnesses },
     commands: draft.commands,
@@ -671,6 +705,38 @@ export function PackagesPage() {
           ...(prev.commands[harnessId] || {}),
           [field]: value,
         },
+      },
+    }));
+  }
+
+  function updateMcpEnvRow(index, field, value) {
+    setDraft(prev => ({
+      ...prev,
+      mcp: {
+        ...prev.mcp,
+        envRows: (prev.mcp.envRows || []).map((row, idx) =>
+          idx === index ? { ...row, [field]: value } : row
+        ),
+      },
+    }));
+  }
+
+  function addMcpEnvRow() {
+    setDraft(prev => ({
+      ...prev,
+      mcp: {
+        ...prev.mcp,
+        envRows: [...(prev.mcp.envRows || []), { key: '', value: '' }],
+      },
+    }));
+  }
+
+  function removeMcpEnvRow(index) {
+    setDraft(prev => ({
+      ...prev,
+      mcp: {
+        ...prev.mcp,
+        envRows: (prev.mcp.envRows || []).filter((_, idx) => idx !== index),
       },
     }));
   }
@@ -1371,16 +1437,46 @@ export function PackagesPage() {
                           </div>
                         )}
                       </div>
-                      <div className="ap-field">
-                        <label htmlFor="ap-mcp-env">环境变量</label>
-                        <input
-                          id="ap-mcp-env"
-                          className="ap-input"
-                          placeholder="只填变量名，不填密钥，如 FIRECRAWL_API_KEY"
-                          value={draft.mcp.envRefsText}
-                          onChange={e => setDraft(prev => ({ ...prev, mcp: { ...prev.mcp, envRefsText: e.target.value } }))}
-                        />
-                      </div>
+                      {draft.mcp.transport === 'stdio' && (
+                        <div className="ap-field ap-kv-field">
+                          <div className="ap-kv-head">
+                            <label htmlFor={draft.mcp.envRows.length ? 'ap-mcp-env-key-0' : undefined}>环境变量</label>
+                            <Button variant="outline" className="ap-kv-add" onClick={addMcpEnvRow}>添加变量</Button>
+                          </div>
+                          {draft.mcp.envRows.length > 0 && (
+                            <div className="ap-kv-list">
+                              {draft.mcp.envRows.map((row, idx) => (
+                                <div key={idx} className="ap-kv-row">
+                                  <label htmlFor={`ap-mcp-env-key-${idx}`} className="ap-sr-only">环境变量名 {idx + 1}</label>
+                                  <input
+                                    id={`ap-mcp-env-key-${idx}`}
+                                    className="ap-input ap-kv-key"
+                                    placeholder="变量名，如 FIRECRAWL_API_KEY"
+                                    value={row.key}
+                                    onChange={e => updateMcpEnvRow(idx, 'key', e.target.value)}
+                                  />
+                                  <label htmlFor={`ap-mcp-env-val-${idx}`} className="ap-sr-only">环境变量值 {idx + 1}</label>
+                                  <input
+                                    id={`ap-mcp-env-val-${idx}`}
+                                    className="ap-input ap-kv-val"
+                                    placeholder="值（留空则引用宿主机变量）"
+                                    value={row.value}
+                                    onChange={e => updateMcpEnvRow(idx, 'value', e.target.value)}
+                                  />
+                                  <Button
+                                    variant="outline"
+                                    className="ap-kv-remove"
+                                    aria-label={`删除第 ${idx + 1} 行环境变量`}
+                                    onClick={() => removeMcpEnvRow(idx)}
+                                  >
+                                    删除
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
 

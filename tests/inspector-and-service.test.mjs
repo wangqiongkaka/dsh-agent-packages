@@ -199,17 +199,22 @@ test('MCP 包与自定义安装器端到端：安装、检查更新、升级与�
         command: 'npx',
         args: ['-y', '@playwright/mcp@{{version}}'],
         envRefs: ['HTTPS_PROXY'],
+        env: { FIRECRAWL_API_KEY: 'fc-demo-secret' },
       },
     },
   });
 
   const codexServers = await readCodexMcpServers(join(homeDir, '.codex', 'config.toml'));
   assert.deepEqual(codexServers.playwright.args, ['-y', '@playwright/mcp@0.0.28']);
+  assert.deepEqual(codexServers.playwright.env_vars, ['HTTPS_PROXY']);
+  assert.equal(codexServers.playwright.env.FIRECRAWL_API_KEY, 'fc-demo-secret');
   assert.equal(codexServers.existing_tool.command, 'existing');
   const claudeServers = await readJsonMcpServers(join(homeDir, '.claude.json'));
   assert.deepEqual(claudeServers.playwright.args, ['-y', '@playwright/mcp@0.0.28']);
+  assert.deepEqual(claudeServers.playwright.env, { HTTPS_PROXY: '${HTTPS_PROXY}', FIRECRAWL_API_KEY: 'fc-demo-secret' });
   const agyServers = await readJsonMcpServers(join(homeDir, '.gemini', 'config', 'mcp_config.json'));
   assert.deepEqual(agyServers.playwright.args, ['-y', '@playwright/mcp@0.0.28']);
+  assert.deepEqual(agyServers.playwright.env, { HTTPS_PROXY: '${HTTPS_PROXY}', FIRECRAWL_API_KEY: 'fc-demo-secret' });
 
   // 2. 检查更新并一键升级
   const checked = await service.action({ type: 'packages.checkUpdates' });

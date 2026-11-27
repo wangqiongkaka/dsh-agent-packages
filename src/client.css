@@ -560,6 +560,29 @@
 }
 .ap-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .ap-field label { font-size: 12px; font-weight: 500; color: var(--ap-muted); }
+.ap-kv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ap-kv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ap-kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+.ap-kv-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ap-kv-remove {
+  height: 36px;
+}
 /* 按面板实际宽度自动分列（DSH 设置页可能只有 500px 左右），同行输入框底部对齐 */
 .ap-grid {
   display: grid;
@@ -912,4 +935,12 @@
     align-items: stretch;
   }
   .ap-search { max-width: none; }
+}
+@media (max-width: 520px) {
+  .ap-kv-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .ap-kv-row .ap-kv-val {
+    grid-column: 1 / -1;
+  }
 }

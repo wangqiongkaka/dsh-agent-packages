@@ -135,13 +135,15 @@ test('renderMcpConfigForHarness 按不同 Harness 渲染并提示 Antigravity SS
     transport: 'stdio',
     command: 'npx',
     args: ['-y', '@playwright/mcp@{{version}}'],
-    envRefs: ['API_TOKEN'],
+    envRefs: ['API_TOKEN', 'FIRECRAWL_API_KEY'],
+    env: { FIRECRAWL_API_KEY: 'fc-secret', APP_VER: '{{version}}' },
   };
   const codex = renderMcpConfigForHarness('codex', stdioSpec, { version: '1.2.3' });
   assert.deepEqual(codex.config, {
     command: 'npx',
     args: ['-y', '@playwright/mcp@1.2.3'],
     env_vars: ['API_TOKEN'],
+    env: { FIRECRAWL_API_KEY: 'fc-secret', APP_VER: '1.2.3' },
   });
 
   const claude = renderMcpConfigForHarness('claude-code', stdioSpec, { version: '1.2.3' });
@@ -149,7 +151,14 @@ test('renderMcpConfigForHarness 按不同 Harness 渲染并提示 Antigravity SS
     type: 'stdio',
     command: 'npx',
     args: ['-y', '@playwright/mcp@1.2.3'],
-    env: { API_TOKEN: '${API_TOKEN}' },
+    env: { API_TOKEN: '${API_TOKEN}', FIRECRAWL_API_KEY: 'fc-secret', APP_VER: '1.2.3' },
+  });
+
+  const agy = renderMcpConfigForHarness('antigravity', stdioSpec, { version: '1.2.3' });
+  assert.deepEqual(agy.config, {
+    command: 'npx',
+    args: ['-y', '@playwright/mcp@1.2.3'],
+    env: { API_TOKEN: '${API_TOKEN}', FIRECRAWL_API_KEY: 'fc-secret', APP_VER: '1.2.3' },
   });
 
   const agySse = renderMcpConfigForHarness('antigravity', {

@@ -470,6 +470,7 @@ export function inferPackageFromRepoMeta({
     args: [],
     url: '',
     envRefs: [],
+    env: {},
     headers: {},
     overrides: {},
   };
