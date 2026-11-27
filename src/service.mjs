@@ -39,11 +39,12 @@ function cliEnv(paths, harnessId) {
   return {};
 }
 
-function serializeSkills({ rows, errors }) {
+function serializeSkills({ rows, errors }, provides) {
   return {
     errors,
     rows: rows.map(row => ({
       name: row.name,
+      providedBy: provides.skills[row.name] ?? [],
       consistent: row.consistent,
       complete: row.complete,
       harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, {
@@ -100,10 +101,11 @@ export class PackageManagerService {
   }
 
   async pluginView(paths) {
-    const { plugins, marketplaces } = await listPlugins(paths);
+    const { plugins, marketplaces, provides } = await listPlugins(paths);
     const marketplaceOf = name => marketplaces.find(item => item.name === name);
     return {
       marketplaces,
+      provides,
       plugins: plugins.map(row => {
         const localDir = row.harnesses['claude-code']?.installPath || row.harnesses.codex?.installPath || '';
         return {
@@ -139,11 +141,12 @@ export class PackageManagerService {
         supportsPlugins: PLUGIN_HARNESSES.includes(id),
       })),
       trashDir: this.trashDir,
-      skills: serializeSkills(skills),
+      skills: serializeSkills(skills, plugins.provides),
       mcp: {
         errors: mcp.errors,
         rows: mcp.rows.map(row => ({
           key: row.key,
+          providedBy: plugins.provides.mcp[row.key] ?? [],
           consistent: row.consistent,
           harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, { spec: item.spec }])),
         })),
@@ -176,6 +179,8 @@ export class PackageManagerService {
     switch (input.type) {
       case 'skill.toggle': {
         const harness = harnessOf(input.harness);
+        const owners = (await listPlugins(await currentPaths())).provides.skills[input.name];
+        if (owners?.length) throw new HttpError(400, `「${input.name}」由插件 ${owners.join('、')} 提供，请在「插件」视图把插件安装到其他端`);
         try {
           const { detail } = await toggleSkill({ harnessPaths: await currentPaths(), name: input.name, harness, on: Boolean(input.on), trashDir: this.trashDir });
           return done(detail, [{ harness, status: 'ok', detail }]);
@@ -186,6 +191,8 @@ export class PackageManagerService {
 
       case 'mcp.toggle': {
         const harness = harnessOf(input.harness);
+        const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
+        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，请在「插件」视图把插件安装到其他端`);
         try {
           const { detail } = await toggleMcp({ harnessPaths: await currentPaths(), key: input.key, harness, on: Boolean(input.on) });
           return done(detail, [{ harness, status: 'ok', detail }]);
@@ -195,6 +202,8 @@ export class PackageManagerService {
       }
 
       case 'mcp.save': {
+        const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
+        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，不能在这里编辑`);
         try {
           const { steps } = await saveMcp({ harnessPaths: await currentPaths(), key: input.key, spec: input.spec, harnesses: input.harnesses });
           return done(`已把「${input.key}」写入 ${steps.map(step => label(step.harness)).join('、')}`, steps);

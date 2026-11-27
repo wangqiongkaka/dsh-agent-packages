@@ -10,8 +10,11 @@ export function SkillsView({ ctx }) {
   const { state, busy, pendingKey, search, run, ask, confirmFor, expanded, toggleExpanded } = ctx;
   const needle = search.trim().toLowerCase();
   const rows = state.skills.rows.filter(row => !needle || row.name.toLowerCase().includes(needle));
-  const attention = rows.filter(row => !row.complete || !row.consistent || Object.values(row.harnesses).some(e => e.broken));
-  const settled = rows.filter(row => !attention.includes(row));
+  // 插件带来的 Skill 由插件管理：单独成组、禁止在矩阵里同步
+  const owned = rows.filter(row => row.providedBy?.length);
+  const free = rows.filter(row => !row.providedBy?.length);
+  const attention = free.filter(row => !row.complete || !row.consistent || Object.values(row.harnesses).some(e => e.broken));
+  const settled = free.filter(row => !attention.includes(row));
   const settledOpen = Boolean(expanded['skills:settled']) || Boolean(needle);
 
   const toggle = (row, harness, on) => {
@@ -32,13 +35,15 @@ export function SkillsView({ ctx }) {
     const open = Boolean(expanded[`skill:${row.name}`]);
     const detailId = `ap-skill-${row.name}`;
     const broken = Object.values(row.harnesses).some(e => e.broken);
+    const ownedBy = row.providedBy?.length ? row.providedBy.join('、') : '';
     return (
-      <article key={row.name} className={`ap-matrix-row ap-pkg-card ${broken ? 'is-error' : !row.consistent ? 'is-warn' : ''}`.trim()}>
+      <article key={row.name} className={`ap-matrix-row ap-pkg-card ${ownedBy ? '' : broken ? 'is-error' : !row.consistent ? 'is-warn' : ''}`.trim()}>
         <div className="ap-row-main">
           <div className="ap-pkg-title-row">
             <RowToggle open={open} title={row.name} controls={detailId} mono onClick={() => toggleExpanded(`skill:${row.name}`)} />
-            {!row.consistent && <span className="ap-badge ap-badge-update" title="各端的真实路径不同，内容可能不一样">各端内容不同</span>}
-            {broken && <span className="ap-badge ap-badge-err">失效软链</span>}
+            {ownedBy && <span className="ap-badge ap-badge-kind" title="由插件安装与清理，不能在这里单独同步">插件 {ownedBy}</span>}
+            {!ownedBy && !row.consistent && <span className="ap-badge ap-badge-update" title="各端的真实路径不同，内容可能不一样">各端内容不同</span>}
+            {!ownedBy && broken && <span className="ap-badge ap-badge-err">失效软链</span>}
           </div>
         </div>
         <ToggleCells
@@ -51,7 +56,7 @@ export function SkillsView({ ctx }) {
               on: Boolean(entry),
               status: entry ? (entry.broken ? 'failed' : 'installed') : 'unselected',
               label: `${harnessLabel(h)}：${entryLabel(entry)}`,
-              disabledReason: '',
+              disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，请在「插件」视图把插件安装到其他端` : '',
               busy: pendingKey === `skill:${row.name}:${h}`,
               onToggle: on => toggle(row, h, on),
             };
@@ -95,6 +100,8 @@ export function SkillsView({ ctx }) {
         </MatrixGroup>
       )}
       {settledOpen && settled.map(renderRow)}
+      {owned.length > 0 && <MatrixGroup title="由插件提供" count={owned.length} labels={!attention.length && !settled.length} />}
+      {owned.map(renderRow)}
     </div>
   );
 }

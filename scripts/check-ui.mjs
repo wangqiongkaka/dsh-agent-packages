@@ -109,6 +109,12 @@ try {
   await writeFile(join(claudeDir, 'plugins', 'known_marketplaces.json'), JSON.stringify({ tools: { source: { source: 'github', repo: 'acme/tools' }, installLocation: mpRoot } }));
   await writeFile(join(claudeDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'tidy@tools': [{ scope: 'user', version: '1.0.0', installPath: join(mpRoot, 'plugins', 'tidy') }] } }));
 
+  // —— 插件自带的 Skill 与 MCP：tidy 带 tidy-helper 与 tidy-mcp，已落到 DSH Skills 目录与 Codex 配置
+  await makeSkill(join(mpRoot, 'plugins', 'tidy', 'skills'), 'tidy-helper');
+  await writeFile(join(mpRoot, 'plugins', 'tidy', '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy-mcp' } } }));
+  await makeSkill(join(dshHome, 'skills'), 'tidy-helper');
+  await writeFile(join(codexDir, 'config.toml'), `${await readFile(join(codexDir, 'config.toml'), 'utf8')}\n[mcp_servers.tidy-mcp]\ncommand = "tidy-mcp"\n`);
+
   // —— 规则：Codex 有 AGENTS.md，DSH 的 AGENTS.md 是指向它的软链
   await writeFile(join(codexDir, 'AGENTS.md'), '# 全局协作规则\n\n- 所有回复使用中文。\n');
   await symlink(join(codexDir, 'AGENTS.md'), join(dshHome, 'AGENTS.md'));
@@ -163,6 +169,12 @@ try {
   assert.match(await page.locator('.ap-matrix-group').first().innerText(), /部分端 \/ 不一致\s*3/);
   assert.equal(await page.locator('.ap-pkg-card', { hasText: 'shared-a' }).count(), 0, '4 端一致的默认折叠');
   assert.match(await row('stale').innerText(), /失效软链/);
+  // 插件带来的 Skill：单独成组、标注来源插件、开关一律置灰
+  const helper = row('tidy-helper');
+  assert.match(await page.locator('.ap-matrix-group', { hasText: '由插件提供' }).innerText(), /由插件提供\s*1/);
+  assert.match(await helper.innerText(), /插件 tidy/);
+  for (const h of ['Codex', 'Claude Code', 'Antigravity', 'DSH 原生']) assert.equal(await sw(helper, h).isDisabled(), true, `${h} 应禁止同步`);
+  assert.match(await sw(helper, 'DSH 原生').getAttribute('aria-label'), /由插件 tidy 提供/);
   await page.screenshot({ path: 'artifacts/packages-desktop.png', fullPage: true });
   // 开启 Codex：建软链指向 Claude 的实体目录
   await sw(row('notes'), 'Codex').click();
@@ -191,6 +203,12 @@ try {
   assert.equal(await page.locator('.ap-logs').count(), 0, '执行记录不跨视图');
   const pw = row('playwright');
   assert.equal(await sw(pw, 'DSH 原生').isDisabled(), true);
+  // 插件带来的 MCP：标注来源插件、禁止同步、没有编辑入口
+  const tidyMcp = row('tidy-mcp');
+  assert.match(await tidyMcp.innerText(), /插件 tidy/);
+  assert.equal(await sw(tidyMcp, 'Claude Code').isDisabled(), true);
+  assert.equal(await sw(tidyMcp, 'Codex').isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: 'tidy-mcp 更多操作' }).count(), 0);
   await sw(pw, 'Codex').click();
   await notice(/已把「playwright」从 Claude Code 写入/);
   const codexPw = (await readCodexMcpServers(join(codexDir, 'config.toml'))).playwright;

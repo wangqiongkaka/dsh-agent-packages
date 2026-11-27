@@ -308,3 +308,30 @@ test('读取 harness-provider 的 claudeCommand 与 claudeConfigDir：缺少设�
   assert.equal(readHarnessClaudeConfigDir(settings([{ ns: 'harness-plugin', value: { claudeConfigDir: null } }])), '');
   assert.equal(readHarnessClaudeConfigDir(() => { throw new Error('no settings'); }), '');
 });
+
+test('插件带来的 Skill 与 MCP：标注来源插件，开关与编辑一律拒绝', async t => {
+  const { homeDir, service } = await setup(t, 'ap-owned-');
+  const pluginDir = join(homeDir, '.claude', 'plugins', 'cache', 'tidy');
+  await makeSkill(join(pluginDir, 'skills'), 'helper');
+  await writeFile(join(pluginDir, '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy' } } }));
+  await writeFile(join(homeDir, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'tidy@tools': [{ scope: 'user', version: '1.0.0', installPath: pluginDir }] } }));
+  // 插件把 helper 拷进了 DSH 的 Skills 目录，把 tidy-mcp 写进了 Codex 配置
+  await makeSkill(join(homeDir, '.dsh', 'skills'), 'helper');
+  await makeSkill(join(homeDir, '.dsh', 'skills'), 'mine');
+  await mkdir(join(homeDir, '.codex'), { recursive: true });
+  await writeFile(join(homeDir, '.codex', 'config.toml'), '[mcp_servers.tidy-mcp]\ncommand = "tidy"\n');
+
+  const state = await service.state();
+  assert.deepEqual(state.skills.rows.find(r => r.name === 'helper').providedBy, ['tidy']);
+  assert.deepEqual(state.skills.rows.find(r => r.name === 'mine').providedBy, []);
+  assert.deepEqual(state.mcp.rows.find(r => r.key === 'tidy-mcp').providedBy, ['tidy']);
+
+  await assert.rejects(() => service.action({ type: 'skill.toggle', name: 'helper', harness: 'codex', on: true }), /由插件 tidy 提供/);
+  await assert.rejects(() => service.action({ type: 'skill.toggle', name: 'helper', harness: 'dsh', on: false }), /由插件 tidy 提供/);
+  assert.equal(await exists(join(homeDir, '.dsh', 'skills', 'helper', 'SKILL.md')), true, '插件的文件不被删除');
+  await assert.rejects(() => service.action({ type: 'mcp.toggle', key: 'tidy-mcp', harness: 'claude-code', on: true }), /由插件 tidy 提供/);
+  await assert.rejects(() => service.action({ type: 'mcp.save', key: 'tidy-mcp', harnesses: ['codex'], spec: { command: 'x' } }), /由插件 tidy 提供/);
+  // 不是插件带来的照常可以同步
+  const ok = await service.action({ type: 'skill.toggle', name: 'mine', harness: 'codex', on: true });
+  assert.equal(ok.ok, true);
+});

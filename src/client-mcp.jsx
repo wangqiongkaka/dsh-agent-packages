@@ -160,12 +160,14 @@ export function McpView({ ctx, form, setForm }) {
     const open = Boolean(expanded[`mcp:${row.key}`]);
     const menuOpen = openMenuId === `mcp:${row.key}`;
     const first = Object.values(row.harnesses)[0]?.spec;
+    const ownedBy = row.providedBy?.length ? row.providedBy.join('、') : '';
     return (
       <article key={row.key} className="ap-matrix-row ap-pkg-card">
         <div className="ap-row-main">
           <div className="ap-pkg-title-row">
             <RowToggle open={open} title={row.key} controls={`ap-mcp-${row.key}`} onClick={() => toggleExpanded(`mcp:${row.key}`)} />
             <span className="ap-badge">{first?.transport === 'http' ? 'HTTP' : 'Stdio'}</span>
+            {ownedBy && <span className="ap-badge ap-badge-kind" title="由插件注册与清理，不能在这里单独同步或编辑">插件 {ownedBy}</span>}
             {!row.consistent && <span className="ap-badge" title="各端的命令、参数或环境变量不同">各端配置不同</span>}
           </div>
         </div>
@@ -177,20 +179,21 @@ export function McpView({ ctx, form, setForm }) {
             on: Boolean(row.harnesses[h]),
             status: row.harnesses[h] ? 'installed' : 'unselected',
             label: `${harnessLabel(h)}：${row.harnesses[h] ? specSummary(row.harnesses[h].spec) : '没有'}`,
-            disabledReason: writable.has(h) ? '' : `${harnessLabel(h)} 没有可写入的 MCP 配置文件`,
+            disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，请在「插件」视图把插件安装到其他端`
+              : writable.has(h) ? '' : `${harnessLabel(h)} 没有可写入的 MCP 配置文件`,
             busy: pendingKey === `mcp:${row.key}:${h}`,
             onToggle: on => toggle(row, h, on),
           }))}
         />
         <div className="ap-pkg-actions">
-          <div className="ap-menu-wrap">
+          {!ownedBy && <div className="ap-menu-wrap">
             <Button variant="outline" disabled={busy} aria-haspopup="menu" aria-expanded={menuOpen} aria-label={`${row.key} 更多操作`} onClick={() => setOpenMenuId(menuOpen ? '' : `mcp:${row.key}`)}>更多 ▾</Button>
             {menuOpen && (
               <div className="ap-menu-pop" role="menu" aria-label={`${row.key} 操作菜单`}>
                 <button type="button" role="menuitem" className="ap-menu-item" onClick={() => openEdit(row)}>编辑</button>
               </div>
             )}
-          </div>
+          </div>}
         </div>
         {confirmFor(`mcp:${row.key}`)}
         {open && (

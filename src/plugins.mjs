@@ -110,6 +110,44 @@ export async function readPluginState(harnessPaths) {
   return state;
 }
 
+async function pluginMcpKeys(dir) {
+  const keys = [];
+  const mcpFile = await readJsonQuiet(join(dir, '.mcp.json'));
+  if (mcpFile) keys.push(...Object.keys(mcpFile.mcpServers ?? mcpFile));
+  for (const rel of [['.claude-plugin', 'plugin.json'], ['.codex-plugin', 'plugin.json'], ['plugin.json']]) {
+    const manifest = await readJsonQuiet(join(dir, ...rel));
+    const declared = manifest?.mcpServers;
+    if (declared && typeof declared === 'object') keys.push(...Object.keys(declared));
+    if (typeof declared === 'string') {
+      const linked = await readJsonQuiet(resolve(dir, declared));
+      if (linked) keys.push(...Object.keys(linked.mcpServers ?? linked));
+    }
+  }
+  return keys;
+}
+
+// 已装插件自带的 Skills 与 MCP：{ skills: { 名称: [插件名] }, mcp: { key: [插件名] } }
+// 插件带来的条目由插件自己管理，矩阵里禁止单独同步
+async function pluginProvides(state) {
+  const provides = { skills: {}, mcp: {} };
+  const add = (map, key, plugin) => {
+    map[key] ??= [];
+    if (!map[key].includes(plugin)) map[key].push(plugin);
+  };
+  for (const harnessId of PLUGIN_HARNESSES) {
+    for (const plugin of state[harnessId].plugins) {
+      if (!plugin.installPath) continue;
+      try {
+        for (const entry of await readdir(join(plugin.installPath, 'skills'), { withFileTypes: true })) {
+          if (entry.isDirectory() || entry.isSymbolicLink()) add(provides.skills, entry.name, plugin.name);
+        }
+      } catch { /* 插件没有 skills 目录 */ }
+      for (const key of await pluginMcpKeys(plugin.installPath)) add(provides.mcp, key, plugin.name);
+    }
+  }
+  return provides;
+}
+
 // 已装插件按「名称@市场」合并；Antigravity 没有市场名，并入第一个同名行
 export async function listPlugins(harnessPaths) {
   const state = await readPluginState(harnessPaths);
@@ -139,6 +177,7 @@ export async function listPlugins(harnessPaths) {
   return {
     plugins: [...rows.values()].map(row => ({ ...row, builtin: BUILTIN_MARKETPLACES.includes(row.marketplace) })).sort(sortBy('id')),
     marketplaces: [...marketplaces.values()].map(row => ({ ...row, builtin: BUILTIN_MARKETPLACES.includes(row.name) || Boolean(row.harnesses.antigravity?.builtin) })).sort(sortBy('name')),
+    provides: await pluginProvides(state),
   };
 }
 
