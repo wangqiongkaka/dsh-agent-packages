@@ -248,7 +248,21 @@ export const PLUGIN_MANIFEST_PATHS = [
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
   '.agents/plugins/marketplace.json',
+  '.antigravity-plugin/plugin.json',
+  '.gemini-plugin/plugin.json',
+  'plugin.json',
+  'gemini-extension.json',
 ];
+
+const BULK_PLUGIN_MANIFEST_RE = /^plugins\/[^/]+\/plugin\.json$/;
+
+export function collectPluginManifestPaths(treePaths = []) {
+  const matched = PLUGIN_MANIFEST_PATHS.filter(path => treePaths.includes(path));
+  for (const path of treePaths) {
+    if (BULK_PLUGIN_MANIFEST_RE.test(path)) matched.push(path);
+  }
+  return [...new Set(matched)];
+}
 
 function hookRefs(manifest) {
   const refs = manifest?.hooks;
@@ -272,12 +286,21 @@ export function detectPlugin({ slug, manifests = {}, hookFiles = {} }) {
   const claudePlugin = manifests['.claude-plugin/plugin.json'];
   const codexPlugin = manifests['.codex-plugin/plugin.json'];
   const agentsMarketplace = manifests['.agents/plugins/marketplace.json'];
-  if (!claudeMarketplace && !claudePlugin && !codexPlugin && !agentsMarketplace) return null;
+  const agyRootPlugin = manifests['.antigravity-plugin/plugin.json']
+    || manifests['.gemini-plugin/plugin.json']
+    || manifests['plugin.json']
+    || manifests['gemini-extension.json'];
+  const bulkPlugins = Object.entries(manifests)
+    .filter(([path]) => BULK_PLUGIN_MANIFEST_RE.test(path))
+    .map(([, manifest]) => manifest)
+    .filter(Boolean);
+  const agyPlugin = agyRootPlugin || bulkPlugins[0];
+  if (!claudeMarketplace && !claudePlugin && !codexPlugin && !agentsMarketplace && !agyPlugin) return null;
 
-  const listed = [...(claudeMarketplace?.plugins ?? []), ...(agentsMarketplace?.plugins ?? [])]
+  const listed = [...(claudeMarketplace?.plugins ?? []), ...(agentsMarketplace?.plugins ?? []), ...bulkPlugins]
     .map(item => item?.name)
     .filter(name => typeof name === 'string' && name);
-  const name = slugifyId(claudePlugin?.name || codexPlugin?.name || listed[0] || slug.repo);
+  const name = slugifyId(claudePlugin?.name || codexPlugin?.name || agyPlugin?.name || listed[0] || slug.repo);
   const marketplace = slugifyId(claudeMarketplace?.name || agentsMarketplace?.name || slug.repo);
 
   const hookSources = [claudePlugin?.hooks, codexPlugin?.hooks].filter(h => h && typeof h === 'object' && !Array.isArray(h));
@@ -292,11 +315,12 @@ export function detectPlugin({ slug, manifests = {}, hookFiles = {} }) {
 
   const harnesses = [];
   if (codexPlugin || agentsMarketplace) harnesses.push('codex');
-  if (claudeMarketplace || claudePlugin) harnesses.push('claude-code', 'antigravity');
+  if (claudeMarketplace || claudePlugin) harnesses.push('claude-code');
+  if (agyPlugin || claudeMarketplace || claudePlugin) harnesses.push('antigravity');
   return {
     name,
     marketplace,
-    version: String(claudePlugin?.version || codexPlugin?.version || ''),
+    version: String(claudePlugin?.version || codexPlugin?.version || agyPlugin?.version || ''),
     harnesses: HARNESS_IDS.filter(id => harnesses.includes(id)),
     hookEvents: [...hookEvents],
     listedPlugins: [...new Set(listed)],
@@ -570,7 +594,7 @@ export async function inspectGitHubRepo(rawRepoUrl, options = {}) {
     const text = await fetchText(`${rawBase}/${path}`, { fetchImpl });
     try { return [path, JSON.parse(text)]; } catch { return null; }
   }))).filter(Boolean));
-  const pluginManifests = await fetchJsonFiles(PLUGIN_MANIFEST_PATHS.filter(path => treePaths.includes(path)));
+  const pluginManifests = await fetchJsonFiles(collectPluginManifestPaths(treePaths));
   const hookFiles = await fetchJsonFiles(pluginHookPaths(pluginManifests, treePaths));
 
   return inferPackageFromRepoMeta({

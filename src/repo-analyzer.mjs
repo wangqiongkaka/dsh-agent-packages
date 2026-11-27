@@ -181,12 +181,12 @@ export function buildRepoAnalyzerPrompt({ repoUrl, baseInspection }) {
     '【dsh-agent-packages 支持的 4 个 Harness 目标】',
     '1. codex：Skills 在 ~/.codex/skills，MCP 在 ~/.codex/config.toml，支持 codex plugin，支持 CODEX_HOME。',
     '2. claude-code：Skills 在 ~/.claude/skills，MCP 在 ~/.claude.json，支持 claude plugin，支持 CLAUDE_CONFIG_DIR。',
-    '3. antigravity：Skills 在 ~/.gemini/config/skills，MCP 在 ~/.gemini/config/mcp_config.json，支持 agy plugin。',
+    '3. antigravity：Skills 在 ~/.gemini/config/skills，MCP 在 ~/.gemini/config/mcp_config.json，支持 agy plugin。注意：agy plugin install <repoUrl> 既支持原生 plugin.json / .antigravity-plugin/plugin.json / .gemini-plugin/plugin.json / plugins/<name>/plugin.json（含 Agent Plugins 1.0.0 规范），也会自动转换安装 Claude Code（.claude-plugin/）与 Gemini CLI（gemini-extension.json）插件；即使仓库 README 未点名 Antigravity，只要包含上述任一插件清单，也应把 antigravity 纳入 plugin.harnesses 与 targets 并填写 agy 命令。',
     '4. dsh（DSH 原生）：Skills 在 ~/.dsh/skills，无原生 MCP JSON 文件（MCP 通过 $DSH_HOME/cordis.patch.yml 注册），暂不支持原生 plugin。',
     '',
     '【4 种包类型选择规则】',
     '- skills-repo：纯对外分发的 Skills 仓库（含对外 SKILL.md，无额外安装步骤）。注意区分仓库开发者自用的 .claude/skills 等隐藏目录技能，不要把 CLI 工具自用技能误判为 skills-repo。',
-    '- plugin：标准插件市场仓库（含 .claude-plugin/、.codex-plugin/ 或 .agents/plugins/ 清单）。',
+    '- plugin：标准插件市场或插件仓库（含 .claude-plugin/、.codex-plugin/、.agents/plugins/、.antigravity-plugin/、.gemini-plugin/、plugin.json、plugins/<name>/plugin.json 或 gemini-extension.json 清单）。',
     '- mcp：纯标准 MCP Server（如直接 npx/uvx 启动 stdio 或连接 HTTP URL，无需额外安装器或规则块注入）。',
     '- installer：自带 CLI、多端安装器、脚本安装或 Skills + MCP + Hooks + 规则块组合型仓库。',
     '',
@@ -309,7 +309,7 @@ export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl,
   const rawTargets = Array.isArray(analysis.targets)
     ? analysis.targets.filter(h => HARNESS_IDS.includes(h))
     : [];
-  const targets = rawTargets.length
+  const baseTargets = rawTargets.length
     ? [...new Set(rawTargets)]
     : (Array.isArray(baseDraft.targets) && baseDraft.targets.length ? baseDraft.targets : ['codex', 'claude-code', 'antigravity']);
 
@@ -325,9 +325,18 @@ export function mergeAnalysisIntoInspection({ analysis, baseInspection, repoUrl,
     mode: analysis.skills?.mode === 'copy' ? 'copy' : 'symlink',
   };
 
-  const pluginHarnesses = Array.isArray(analysis.plugin?.harnesses) && analysis.plugin.harnesses.length
+  const staticPluginHarnesses = Array.isArray(baseDraft.plugin?.harnesses) ? baseDraft.plugin.harnesses : [];
+  const analyzedPluginHarnesses = Array.isArray(analysis.plugin?.harnesses) && analysis.plugin.harnesses.length
     ? HARNESS_IDS.filter(h => analysis.plugin.harnesses.includes(h))
-    : (baseDraft.plugin?.harnesses ?? []);
+    : staticPluginHarnesses;
+  // agy 原生支持 plugins/<name>/plugin.json 及 .claude-plugin/ 转换：静态清单已确认兼容时，不因 README 未点名而被模型遗漏
+  const agySupportedByManifest = kind === 'plugin' && staticPluginHarnesses.includes('antigravity');
+  const pluginHarnesses = agySupportedByManifest && !analyzedPluginHarnesses.includes('antigravity')
+    ? HARNESS_IDS.filter(h => analyzedPluginHarnesses.includes(h) || h === 'antigravity')
+    : analyzedPluginHarnesses;
+  const targets = agySupportedByManifest && !baseTargets.includes('antigravity')
+    ? [...baseTargets, 'antigravity']
+    : baseTargets;
   const plugin = kind === 'plugin' || baseDraft.plugin
     ? {
         name: slugifyId(analysis.plugin?.name || baseDraft.plugin?.name || name) || slugifyId(name),

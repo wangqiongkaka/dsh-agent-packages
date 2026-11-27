@@ -7,7 +7,8 @@ import { once } from 'node:events';
 import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { inferPackageFromRepoMeta, extractInstallCommandsFromReadme, pluginHookPaths } from '../src/github-inspector.mjs';
+import { collectPluginManifestPaths, inferPackageFromRepoMeta, extractInstallCommandsFromReadme, pluginHookPaths } from '../src/github-inspector.mjs';
+import { mergeAnalysisIntoInspection } from '../src/repo-analyzer.mjs';
 import { PackageManagerService } from '../src/service.mjs';
 import { apiHandler, ENDPOINT, HEADER_KEY } from '../src/api.mjs';
 import { readCodexMcpServers, readJsonMcpServers } from '../src/config-editors.mjs';
@@ -1340,4 +1341,70 @@ test('深度分析 plugin（如 ponytail）：保留定制卸载清理命令、�
   assert.equal(executed.length, 1);
   assert.match(executed[0].command, /^node .+repos\/ponytail\/scripts\/uninstall\.js && reclaude plugin uninstall ponytail@ponytail$/);
   assert.equal(executed[0].claudeConfigDir, claudeConfigDir);
+});
+
+test('Antigravity 插件兼容：识别 plugins/<name>/plugin.json 并在深度分析漏选 antigravity 时自动补齐', () => {
+  const treePaths = [
+    '.claude-plugin/marketplace.json',
+    '.agents/plugins/marketplace.json',
+    'plugins/open-code-review/plugin.json',
+    'plugins/open-code-review/skills/open-code-review/SKILL.md',
+  ];
+  assert.deepEqual(collectPluginManifestPaths(treePaths), [
+    '.claude-plugin/marketplace.json',
+    '.agents/plugins/marketplace.json',
+    'plugins/open-code-review/plugin.json',
+  ]);
+
+  // 仅包含 plugins/<name>/plugin.json 时也应识别为 Antigravity 插件
+  const agyOnly = inferPackageFromRepoMeta({
+    slug: { owner: 'example', repo: 'ocr-bundle', slug: 'example/ocr-bundle' },
+    repoUrl: 'https://github.com/example/ocr-bundle',
+    treePaths: ['plugins/open-code-review/plugin.json'],
+    pluginManifests: {
+      'plugins/open-code-review/plugin.json': { name: 'open-code-review', version: '1.0.0' },
+    },
+  });
+  assert.equal(agyOnly.draft.kind, 'plugin');
+  assert.deepEqual(agyOnly.draft.plugin.harnesses, ['antigravity']);
+  assert.equal(agyOnly.evidence.plugin.version, '1.0.0');
+
+  // 深度分析遗漏 antigravity 时，依据静态清单证据自动补齐 targets、plugin.harnesses 与 agy 命令
+  const baseInspection = inferPackageFromRepoMeta({
+    slug: { owner: 'alibaba', repo: 'open-code-review', slug: 'alibaba/open-code-review' },
+    repoUrl: 'https://github.com/alibaba/open-code-review',
+    treePaths,
+    pluginManifests: {
+      '.claude-plugin/marketplace.json': { name: 'open-code-review', plugins: [{ name: 'open-code-review' }] },
+      '.agents/plugins/marketplace.json': { name: 'open-code-review', plugins: [{ name: 'open-code-review-codex' }] },
+      'plugins/open-code-review/plugin.json': { name: 'open-code-review', version: '1.0.0' },
+    },
+  });
+  const merged = mergeAnalysisIntoInspection({
+    repoUrl: 'https://github.com/alibaba/open-code-review',
+    harness: 'codex',
+    model: 'gpt-6.1-sol',
+    baseInspection,
+    analysis: {
+      kind: 'plugin',
+      name: 'open-code-review',
+      description: 'AI code review',
+      version: '1.0.0',
+      npmPackage: '@alibaba-group/open-code-review',
+      targets: ['codex', 'claude-code'],
+      plugin: { name: 'open-code-review', marketplace: 'open-code-review', harnesses: ['codex', 'claude-code'] },
+      commands: {
+        shared: { install: 'npm install -g @alibaba-group/open-code-review', upgrade: '', uninstall: '', version: '' },
+        codex: { install: 'codex plugin marketplace add alibaba/open-code-review && codex plugin add open-code-review-codex@open-code-review', upgrade: '', uninstall: '' },
+        'claude-code': { install: '{{claude}} plugin marketplace add alibaba/open-code-review && {{claude}} plugin install open-code-review@open-code-review', upgrade: '', uninstall: '' },
+      },
+      summary: 'AI 代码审查插件',
+      warnings: [],
+    },
+  });
+  assert.deepEqual(merged.draft.plugin.harnesses, ['codex', 'claude-code', 'antigravity']);
+  assert.deepEqual(merged.draft.targets, ['codex', 'claude-code', 'antigravity']);
+  assert.equal(merged.draft.commands.antigravity.install, "agy plugin install 'https://github.com/alibaba/open-code-review'");
+  assert.equal(merged.draft.commands.antigravity.upgrade, "agy plugin uninstall open-code-review && agy plugin install 'https://github.com/alibaba/open-code-review'");
+  assert.equal(merged.draft.commands.antigravity.uninstall, 'agy plugin uninstall open-code-review');
 });
