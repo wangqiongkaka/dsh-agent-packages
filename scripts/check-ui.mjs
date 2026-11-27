@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -72,6 +72,9 @@ try {
   await writeFile(join(homeDir, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'ponytail@ponytail': [{ scope: 'user', version: '1.2.0' }] } }));
   await mkdir(join(homeDir, '.gemini', 'config', 'plugins', 'ponytail'), { recursive: true });
   // 让 Hindsight 的 Claude Code 安装先失败，覆盖失败行、重试与失败记录自动展开
+  // 本机未纳管的 Claude Skill，用于验证纳管
+  await mkdir(join(homeDir, '.claude', 'skills', 'my-notes'), { recursive: true });
+  await writeFile(join(homeDir, '.claude', 'skills', 'my-notes', 'SKILL.md'), '---\nname: my-notes\n---\n');
   let failHindsightClaude = true;
 
   const mockFetch = async url => {
@@ -246,6 +249,18 @@ try {
     },
   });
 
+  await service.action({
+    type: 'package.save',
+    installNow: true,
+    package: {
+      id: 'solo-cli',
+      name: 'Solo CLI',
+      kind: 'installer',
+      targets: ['codex'],
+      commands: { shared: { install: 'solo install', uninstall: 'solo uninstall --all' } },
+    },
+  });
+
   const bundled = await build({
     entryPoints: ['tests/fixtures/preview.jsx'],
     bundle: true,
@@ -281,74 +296,103 @@ try {
 
   await page.goto(url);
   await page.getByText('Firecrawl Skills').waitFor();
-  await page.getByText('Hindsight Memory').waitFor();
+  const exists = async p => { try { await lstat(p); return true; } catch { return false; } };
+  const tabNames = await page.getByRole('tab').allInnerTexts();
+  assert.deepEqual(tabNames.map(t => t.replace(/\d+/g, '').trim()), ['Skills', 'MCP', '插件', '规则'], '按资源类型分 4 个视图');
+  assert.equal(await page.getByRole('tab', { name: /Skills/ }).getAttribute('aria-selected'), 'true');
   await page.screenshot({ path: 'artifacts/packages-desktop.png', fullPage: true });
 
-  // 0. 失败路径：失败行进入「需要处理」，整行写明原因，主按钮为「重试安装」，组头有「全部同步」
+  // 0. Skills：来源组头显示各端「已装/总数」，展开后逐个 Skill 开关；关闭先行内确认
+  const fcGroup = page.locator('.ap-skill-group', { hasText: 'Firecrawl Skills' });
+  assert.equal(await fcGroup.getByRole('switch', { name: /^Codex：已装 2 \/ 共 2/ }).count(), 1);
+  assert.equal(await page.locator('.ap-skill-row').count(), 0, '来源分组默认收起');
+  await fcGroup.getByRole('button', { name: 'Firecrawl Skills', exact: true }).click();
+  const searchRow = page.locator('.ap-skill-row', { hasText: 'firecrawl-search' });
+  await searchRow.waitFor();
+  assert.equal(await page.locator('.ap-skill-row').count(), 2);
+  const codexSearch = searchRow.getByRole('switch', { name: /^Codex：/ });
+  assert.equal(await codexSearch.getAttribute('aria-checked'), 'true');
+  await codexSearch.click();
+  await searchRow.locator('.ap-confirm').getByText(/将从 Codex 移除 Skill「firecrawl-search」/).waitFor();
+  assert.equal(await exists(join(homeDir, '.codex', 'skills', 'firecrawl-search')), true, '确认前不执行');
+  await page.getByRole('button', { name: '确认移除' }).click();
+  await page.getByText(/已从 Codex 移除「firecrawl-search」/).waitFor();
+  assert.equal(await exists(join(homeDir, '.codex', 'skills', 'firecrawl-search')), false);
+  assert.equal(await exists(join(homeDir, '.codex', 'skills', 'firecrawl-scrape')), true, '同组其他 Skill 不受影响');
+  assert.equal(await page.locator('.ap-skill-row', { hasText: 'firecrawl-search' }).getByRole('switch', { name: /^Codex：/ }).getAttribute('aria-checked'), 'false');
+  assert.equal(await fcGroup.getByRole('switch', { name: /^Codex：已装 1 \/ 共 2.*点击开启全部/ }).count(), 1, '部分开启时组头提示与动作一致');
+  await page.screenshot({ path: 'artifacts/packages-skills.png', fullPage: true });
+  // 点亮立即安装，不需要确认
+  await page.locator('.ap-skill-row', { hasText: 'firecrawl-search' }).getByRole('switch', { name: /^Codex：/ }).click();
+  await page.getByText(/已在 Codex 启用「firecrawl-search」/).waitFor();
+  assert.equal(await exists(join(homeDir, '.codex', 'skills', 'firecrawl-search')), true);
+
+  // 本机未纳管的 Skill：纳管只登记不改文件，之后可同步到其他端
+  const notesRow = page.locator('.ap-unmanaged-row', { hasText: 'my-notes' });
+  await notesRow.waitFor();
+  assert.equal(await notesRow.getByRole('img', { name: /^Claude Code：本机存在/ }).count(), 1);
+  await notesRow.getByRole('button', { name: '纳管' }).click();
+  await page.getByText(/已纳管 Skill「my-notes」/).waitFor();
+  assert.equal(await page.locator('.ap-unmanaged-row', { hasText: 'my-notes' }).count(), 0);
+  const localGroup = page.locator('.ap-skill-group', { hasText: '本机 Skills' });
+  await localGroup.getByRole('button', { name: '本机 Skills', exact: true }).click();
+  await page.locator('.ap-skill-row', { hasText: 'my-notes' }).getByRole('switch', { name: /^Codex：/ }).click();
+  await page.getByText(/已在 Codex 启用「my-notes」/).waitFor();
+  assert.equal((await lstat(join(homeDir, '.codex', 'skills', 'my-notes'))).isSymbolicLink(), true);
+  // 诊断提示并入 Skills 视图
+  await page.locator('.ap-warning-list').getByText(/失效软链接/).waitFor();
+  await page.locator('.ap-warning-list').getByText(/检测到旧版目录/).waitFor();
+
+  // 1. 插件视图：失败行写明原因并给出「重试安装」；跳过时开关不翻转；未纳管插件跨端合并、可纳管
+  await page.getByRole('tab', { name: /插件/ }).click();
+  assert.equal(await page.locator('.ap-logs').count(), 0, '执行记录不跨视图');
+  assert.equal(await page.locator('.ap-banner-notice').count(), 0, '提示不跨视图');
   const hindsightRow = page.locator('.ap-pkg-card', { hasText: 'Hindsight Memory' });
   assert.match(await hindsightRow.getAttribute('class'), /is-error/);
   assert.match(await hindsightRow.locator('.ap-row-reason').innerText(), /Claude Code 安装失败：hindsight: command not found/);
-  assert.equal(await hindsightRow.getByRole('img', { name: /^Claude Code：安装失败/ }).count(), 1);
+  assert.match(await hindsightRow.locator('.ap-badge-kind').innerText(), /CLI 工具/);
   await page.getByRole('button', { name: '全部同步' }).waitFor();
   await hindsightRow.getByRole('button', { name: '重试安装' }).click();
-  // 仍然失败：执行记录自动展开并在摘要里写明失败步数
   await page.locator('.ap-logs[open]').waitFor();
   assert.match(await page.locator('.ap-logs summary').innerText(), /1 步失败/);
   assert.match(await page.locator('.ap-banner-notice').getAttribute('class'), /is-warn/, '部分失败的提示不应使用成功色');
   await page.setViewportSize({ width: 585, height: 1000 });
   await page.screenshot({ path: 'artifacts/packages-failed-panel.png', fullPage: true });
   await page.setViewportSize({ width: 1360, height: 1000 });
-  // 修复后重试成功，Hindsight 回到「已就绪」
   failHindsightClaude = false;
   await hindsightRow.getByRole('button', { name: '重试安装' }).click();
-  await page.locator('.ap-matrix-group', { hasText: '全部已就绪' }).waitFor();
-  assert.equal(await page.getByRole('button', { name: '全部同步' }).count(), 0);
+  await page.getByText(/「Hindsight Memory」安装完成/).waitFor();
+  assert.doesNotMatch(await hindsightRow.getAttribute('class'), /is-error/);
   assert.equal(await page.locator('.ap-logs[open]').count(), 0, '全部成功时执行记录默认折叠');
+  // DSH 没有配置该安装器的命令：步骤被跳过，开关保持关闭
+  const dshSwitch = hindsightRow.getByRole('switch', { name: /^DSH 原生：/ });
+  await dshSwitch.click();
+  await page.getByText(/在 DSH 原生 未变更/).waitFor();
+  assert.equal(await dshSwitch.getAttribute('aria-checked'), 'false');
+  // CLI 工具关掉最后一个端：确认条写明会执行全局卸载命令
+  const soloRow = page.locator('.ap-pkg-card', { hasText: 'Solo CLI' });
+  await soloRow.getByRole('switch', { name: /^Codex：/ }).click();
+  await soloRow.locator('.ap-confirm').getByText(/这是最后一个端，会同时执行全局卸载命令：solo uninstall --all/).waitFor();
+  await soloRow.locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
+  assert.equal(await soloRow.getByRole('switch', { name: /^Codex：/ }).getAttribute('aria-checked'), 'true');
+  // ponytail 装在 Claude Code 与 Antigravity，合并为一行；纳管后成为受管插件
+  const ponyRow = page.locator('.ap-unmanaged-row', { hasText: 'ponytail' });
+  assert.equal(await ponyRow.count(), 1);
+  assert.match(await ponyRow.innerText(), /ponytail@ponytail/);
+  await ponyRow.getByRole('button', { name: '纳管' }).click();
+  await page.getByText(/已纳管插件「ponytail」/).waitFor();
+  const ponyManaged = page.locator('.ap-pkg-card', { hasText: 'ponytail' });
+  assert.equal(await ponyManaged.getByRole('switch', { name: /^Claude Code：已安装/ }).getAttribute('aria-checked'), 'true');
+  assert.equal(await ponyManaged.getByRole('switch', { name: /^DSH 原生：/ }).isDisabled(), true, '插件在 DSH 原生不可用');
 
-  // 0a. 信息架构：视图内工具栏、按状态分组、4 端状态列对齐且端名只在表头出现一次
-  assert.equal(await page.getByRole('button', { name: '解析设置' }).count(), 0, '解析设置已收进添加面板');
-  assert.equal(await page.locator('.ap-col-head').count(), 1, '包清单只应有一行端名表头');
-  assert.equal(await page.locator('.ap-pkg-card .ap-cell').count(), 8, '每个包 4 个对齐状态格');
-  assert.equal(await page.locator('.ap-pkg-card').first().getByRole('img', { name: /^Codex：/ }).count(), 1, '状态格应有可读的端名与状态');
-  const cellLefts = await page.locator('.ap-matrix .ap-cells').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().left)));
-  assert.equal(new Set(cellLefts).size, 1, `各行状态列应与表头对齐：${cellLefts}`);
-  // 默认收起详情，点包名展开仓库、备注与各端明细
-  assert.equal(await page.locator('.ap-row-detail').count(), 0);
-  await page.getByRole('button', { name: 'Firecrawl Skills', exact: true }).click();
-  await page.locator('.ap-row-detail').getByText('网页抓取、搜索与结构化提取技能包').waitFor();
-  assert.equal(await page.locator('.ap-row-detail li').count(), 4, '详情应列出 4 个目标端明细');
-  await page.getByRole('button', { name: 'Firecrawl Skills', exact: true }).click();
-  assert.equal(await page.locator('.ap-row-detail').count(), 0);
-
-  // 0b. 编辑已有包时原位展开，不在下方重复展示该包的摘要卡片
-  const listIndexOf = matcher => page.locator('.ap-list').evaluate((list, m) => [...list.children].findIndex(el => (m.selector ? el.matches(m.selector) : el.textContent.includes(m.text))), matcher);
-  const hindsightIndex = await listIndexOf({ text: 'Hindsight Memory' });
-  await page.getByRole('button', { name: 'Hindsight Memory 更多操作' }).click();
-  await page.getByRole('menuitem', { name: '编辑' }).click();
-  await page.getByRole('heading', { name: '编辑 hindsight' }).waitFor();
-  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 1, '编辑已有包应在列表原位展开');
-  assert.equal(await page.locator('.ap-pkg-card').count(), 1, '编辑时不应重复展示当前包的摘要卡片');
-  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'Hindsight Memory' }).count(), 0);
-  assert.equal(await listIndexOf({ selector: '.ap-editor' }), hindsightIndex, '编辑面板应占据该包原来的行位置');
-  // 编辑期间若被筛选条件排除，仍回落到顶部保留编辑状态
-  await page.locator('.ap-search').fill('Firecrawl');
-  assert.equal(await page.locator('.ap-editor').count(), 1, '被筛选排除时仍应保留编辑面板');
-  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 0);
-  await page.locator('.ap-search').fill('');
-  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 1);
-  await page.getByRole('button', { name: '收起' }).click();
-  assert.equal(await page.locator('.ap-editor').count(), 0);
-  assert.equal(await page.locator('.ap-pkg-card').count(), 2, '收起后应恢复全部包卡片');
-
-  // 1. 打开添加包 → 解析 GitHub 仓库 → 截图 → 保存并安装
-  await page.getByRole('button', { name: '添加包' }).click();
+  // 2. MCP 视图：添加包 → 解析 GitHub 仓库 → Key-Value 环境变量 → 保存并安装
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  await page.getByRole('button', { name: '添加 MCP' }).click();
   await page.locator('#ap-repo').fill('microsoft/playwright-mcp');
   await page.getByRole('button', { name: '解析仓库' }).click();
   await page.locator('.ap-evidence').waitFor();
   assert.equal(await page.locator('#ap-version').inputValue(), '0.0.28');
-  // 折叠的「高级设置」摘要仍显示解析出的锁定版本
   assert.match(await page.locator('.ap-editor .ap-advanced summary').innerText(), /0\.0\.28/);
-  // 验证 MCP 环境变量 Key-Value 表单的新增、输入与删除
   await page.locator('#ap-mcp-env-key-0').fill('FIRECRAWL_API_KEY');
   await page.locator('#ap-mcp-env-val-0').fill('fc-demo-key');
   await page.getByRole('button', { name: '添加变量' }).click();
@@ -356,6 +400,12 @@ try {
   await page.getByRole('button', { name: '添加变量' }).click();
   await page.getByRole('button', { name: '删除第 3 行环境变量' }).click();
   assert.equal(await page.locator('.ap-kv-row').count(), 2, '删除后应保留 2 行环境变量');
+  // 切到其他视图再回来，填了一半的添加面板仍在；其他视图的「添加」暂时禁用
+  await page.getByRole('tab', { name: /Skills/ }).click();
+  assert.equal(await page.locator('.ap-editor').count(), 0);
+  assert.equal(await page.getByRole('button', { name: '添加 Skills 来源' }).isDisabled(), true);
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  assert.equal(await page.locator('#ap-mcp-env-val-0').inputValue(), 'fc-demo-key', '切换 Tab 不丢草稿');
   await page.screenshot({ path: 'artifacts/packages-editor.png', fullPage: true });
 
   // 编辑面板同一行的输入框顶部对齐（宽屏与 DSH 设置页常见的约 560px 宽度各检查一次）
@@ -380,18 +430,32 @@ try {
   await narrow.evaluate(el => el.remove());
 
   await page.getByRole('button', { name: '保存并安装' }).click();
-  await page.getByText('playwright-mcp').first().waitFor();
-  // 重新打开编辑核对 Key-Value 与留空引用均正确回显
+  const pwRow = page.locator('.ap-pkg-card', { hasText: 'playwright-mcp' });
+  await pwRow.waitFor();
+  assert.equal(await page.getByRole('tab', { name: /MCP/ }).getAttribute('aria-selected'), 'true', '保存后停留在 MCP 视图');
+  // 重新打开编辑核对 Key-Value 与留空引用均正确回显；编辑面板原位展开，不重复显示该行
   await page.getByRole('button', { name: 'playwright-mcp 更多操作' }).click();
   await page.getByRole('menuitem', { name: '编辑' }).click();
+  assert.equal(await page.locator('.ap-list > .ap-editor').count(), 1, '编辑已有条目应在列表原位展开');
+  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'playwright-mcp' }).count(), 0);
   assert.equal(await page.locator('#ap-mcp-env-key-0').inputValue(), 'FIRECRAWL_API_KEY');
   assert.equal(await page.locator('#ap-mcp-env-val-0').inputValue(), 'fc-demo-key');
   assert.equal(await page.locator('#ap-mcp-env-key-1').inputValue(), 'HTTPS_PROXY');
   assert.equal(await page.locator('#ap-mcp-env-val-1').inputValue(), '');
   await page.getByRole('button', { name: '收起' }).click();
+  // DSH 原生没有 MCP 配置文件：开关不可用；关闭 Antigravity 需确认，确认后移除配置条目
+  assert.equal(await pwRow.getByRole('switch', { name: /^DSH 原生：/ }).isDisabled(), true);
+  await pwRow.getByRole('switch', { name: /^Antigravity：/ }).click();
+  await pwRow.locator('.ap-confirm').getByText(/将从 Antigravity 移除「playwright-mcp」的 MCP 配置条目/).waitFor();
+  await page.locator('.ap-confirm').screenshot({ path: 'artifacts/packages-confirm.png' });
+  await page.getByRole('button', { name: '确认卸载' }).click();
+  await page.getByText(/已从 Antigravity 移除「playwright-mcp」/).waitFor();
+  const agyMcp = JSON.parse(await readFile(join(homeDir, '.gemini', 'config', 'mcp_config.json'), 'utf8'));
+  assert.equal(agyMcp.mcpServers?.['playwright-mcp'], undefined);
 
-  // 1b. 解析 CodeGraph 类 CLI 安装器仓库：校验自动识别为自定义安装器、填充全局与 4 端命令及对齐
-  await page.getByRole('button', { name: '添加包' }).click();
+  // 2b. 解析 CodeGraph 类 CLI 安装器仓库：自动识别为 CLI 工具、填充全局与 4 端命令
+  await page.getByRole('tab', { name: /插件/ }).click();
+  await page.getByRole('button', { name: '添加插件' }).click();
   await page.locator('#ap-repo').fill('https://github.com/colbymchenry/codegraph.git');
   await page.getByRole('button', { name: '解析仓库' }).click();
   await page.locator('.ap-evidence').waitFor();
@@ -405,28 +469,34 @@ try {
   assert.deepEqual(await misaligned(), [], 'CLI 安装器编辑面板宽屏输入框未对齐');
   await page.screenshot({ path: 'artifacts/packages-codegraph-editor.png', fullPage: true });
   await page.getByRole('button', { name: '保存并预览' }).click();
-  // 主动预览的执行记录默认展开，状态显示为中文
   await page.getByText('全局 CLI').first().waitFor();
   assert.match(await page.locator('.ap-logs summary').innerText(), /仅预览，未写入/);
-  assert.equal(await page.locator('.ap-log-top .ap-badge', { hasText: /^ok$/ }).count(), 0, '执行状态不应显示原始值');
   await page.getByRole('button', { name: '收起' }).click();
-  // 预览只保存不安装：codegraph 进入「需要处理」，写明未安装的端，主按钮为「安装」
+  // 预览只保存不安装：写明未安装的端；codegraph 安装器管理同名 MCP，所以 MCP 视图里不再列为未纳管
   const codegraphPkgRow = page.locator('.ap-pkg-card', { hasText: 'codegraph' });
   assert.match(await codegraphPkgRow.locator('.ap-row-reason').innerText(), /尚未安装到 Codex、Claude Code、Antigravity、DSH 原生/);
-  assert.equal(await codegraphPkgRow.getByRole('button', { name: '安装', exact: true }).count(), 1);
-  // 删除测试中保存的 codegraph 预览项：危险操作先在行内确认，取消不执行
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  await page.getByText(/另有 1 项由插件或 CLI 工具管理，不单独纳管：codegraph（codegraph）/).waitFor();
+  await page.getByRole('tab', { name: /插件/ }).click();
   await page.getByRole('button', { name: 'codegraph 更多操作' }).click();
   await page.getByRole('menuitem', { name: '从清单移除' }).click();
-  await page.locator('.ap-confirm').getByText('将从清单移除 codegraph').waitFor();
-  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'codegraph' }).count(), 1, '确认前不应移除');
+  await page.locator('.ap-confirm').getByText('将从清单移除「codegraph」').waitFor();
   await page.getByRole('button', { name: '确认移除' }).click();
   await page.locator('.ap-pkg-card', { hasText: 'codegraph' }).waitFor({ state: 'detached' });
 
-  // 1c. 全局解析设置（在添加面板内切换）：Codex + 选择模型 → 深度分析仓库 → 校验 AI 摘要与提示 → 切回静态规则
-  await page.getByRole('button', { name: '添加包' }).click();
+  // 2c. 纳管 MCP：codegraph 回到未纳管；纳管不改 Codex 配置
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  const codexTomlBefore = await readFile(join(homeDir, '.codex', 'config.toml'), 'utf8');
+  const cgUnmanaged = page.locator('.ap-unmanaged-row', { hasText: 'codegraph' });
+  await cgUnmanaged.getByRole('button', { name: '纳管' }).click();
+  await page.getByText(/已纳管 MCP「codegraph」，未改动本机配置/).waitFor();
+  assert.equal(await readFile(join(homeDir, '.codex', 'config.toml'), 'utf8'), codexTomlBefore);
+  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'codegraph' }).getByRole('switch', { name: /^Codex：已安装/ }).getAttribute('aria-checked'), 'true');
+
+  // 3. 全局解析设置（在添加面板内切换）：Codex + 模型 → 深度分析 → 切回静态规则
+  await page.getByRole('button', { name: '添加 MCP' }).click();
   await page.getByRole('button', { name: '切换', exact: true }).click();
   await page.getByRole('heading', { name: '全局解析设置' }).waitFor();
-  assert.equal(await page.locator('.ap-editor .ap-settings-card').count(), 1, '解析设置应在添加面板内展开');
   await page.locator('#ap-analyzer-harness').click();
   await page.getByRole('option', { name: /Codex/ }).click();
   await page.locator('#ap-analyzer-model').waitFor();
@@ -435,19 +505,13 @@ try {
   await page.screenshot({ path: 'artifacts/packages-analyzer-settings.png', fullPage: true });
   await page.getByRole('button', { name: '保存设置' }).click();
   await page.getByText(/已保存全局解析配置：Codex · gpt-6\.2-sol/).waitFor();
-  assert.equal(await page.locator('.ap-settings-card').count(), 0, '保存后收起设置，回到添加面板');
   await page.getByText(/当前解析：Codex · gpt-6\.2-sol（深度模式）/).waitFor();
   await page.locator('#ap-repo').fill('https://github.com/colbymchenry/codegraph.git');
   await page.getByRole('button', { name: '解析仓库' }).click();
   await page.locator('.ap-ai-evidence').waitFor();
   assert.match(await page.locator('.ap-ai-evidence').innerText(), /深度分析 · Codex \(gpt-6\.2-sol\)/);
   assert.match(await page.locator('.ap-ai-evidence').innerText(), /首次接入后请重启对应 Harness 会话/);
-  assert.equal(await page.locator('#ap-cmd-install-codex').inputValue(), 'codegraph install --target codex --yes');
   await page.screenshot({ path: 'artifacts/packages-ai-analysis.png', fullPage: true });
-  await page.getByRole('button', { name: '收起' }).click();
-
-  // 恢复默认静态规则设置，确保后续用例洁净
-  await page.getByRole('button', { name: '添加包' }).click();
   await page.getByRole('button', { name: '切换', exact: true }).click();
   await page.locator('#ap-analyzer-harness').click();
   await page.getByRole('option', { name: /静态规则/ }).click();
@@ -455,175 +519,89 @@ try {
   await page.getByText(/当前解析：静态规则/).waitFor();
   await page.getByRole('button', { name: '收起' }).click();
 
-  // 2. 检查更新并验证出现版本对比徽章与状态化主按钮，再点击升级
+  // 4. 检查更新 → 版本对比徽章 → 升级
   await page.getByRole('button', { name: '检查更新' }).click();
   await page.getByText('v0.0.28 → v0.0.29').waitFor();
-  // 有新版本的包进入「需要处理」分组，组头提供批量升级
-  const attentionNames = await page.locator('.ap-pkg-card.is-warn, .ap-pkg-card.is-error').allInnerTexts();
-  assert.ok(attentionNames.some(text => text.includes('playwright-mcp')), '可升级的包应在需要处理分组');
-  await page.getByRole('button', { name: '全部升级（1）' }).waitFor();
   await page.screenshot({ path: 'artifacts/packages-outdated.png', fullPage: true });
-
-  await page.getByRole('button', { name: '升级', exact: true }).click();
+  await pwRow.getByRole('button', { name: '升级', exact: true }).click();
   await page.getByText('v0.0.29').first().waitFor();
-  // 所有目标端已装齐且无更新时，卡片不再显示多余的「安装」按钮
-  assert.equal(await page.getByRole('button', { name: '安装', exact: true }).count(), 0);
 
-  // 打开「更多」菜单验证清晰的卸载/移除区分；确认条写明受影响的端，取消后不执行
-  await page.getByRole('button', { name: 'playwright-mcp 更多操作' }).click();
-  await page.getByRole('menuitem', { name: '卸载并移除' }).click();
-  const confirmText = await page.locator('.ap-confirm').innerText();
-  assert.match(confirmText, /Codex、Claude Code、Antigravity/);
-  assert.match(confirmText, /确认卸载并移除/);
-  await page.locator('.ap-confirm').screenshot({ path: 'artifacts/packages-confirm.png' });
-  await page.locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
-  assert.equal(await page.locator('.ap-confirm').count(), 0);
-  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'playwright-mcp' }).count(), 1, '取消后包仍在');
+  // 5. 规则：纳管本机文件（写入结果不变）→ 新建片段 → 开关写入 → 只写变化的端 → 预览
+  await page.getByRole('tab', { name: /规则/ }).click();
+  await page.getByText('还没有规则片段').waitFor();
+  const codexAgentsBefore = await readFile(join(homeDir, '.codex', 'AGENTS.md'), 'utf8');
+  // DSH 的 AGENTS.md 是软链：纳管确认条写明会拆分为独立文件
+  const dshFileRow = page.locator('.ap-unmanaged-row', { hasText: 'DSH 原生 · AGENTS.md' });
+  await dshFileRow.getByRole('button', { name: '纳管' }).click();
+  await dshFileRow.locator('.ap-confirm').getByText(/是指向 .* 的软链，写入时会拆分为独立文件/).waitFor();
+  await dshFileRow.locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
+  const codexFileRow = page.locator('.ap-unmanaged-row', { hasText: 'Codex · AGENTS.md' });
+  await codexFileRow.getByRole('button', { name: '纳管' }).click();
+  await codexFileRow.locator('.ap-confirm').getByText(/全文导入为只对 Codex 开启的新片段/).waitFor();
+  await page.getByRole('button', { name: '确认纳管' }).click();
+  await page.getByText(/已把 Codex 的 AGENTS.md 纳管为片段/).waitFor();
+  assert.equal(await readFile(join(homeDir, '.codex', 'AGENTS.md'), 'utf8'), codexAgentsBefore, '纳管后 Codex 文件内容不变');
+  const importedRow = page.locator('.ap-rule-row', { hasText: 'Codex 现有 AGENTS.md' });
+  assert.equal(await importedRow.getByRole('switch', { name: /^Codex：写入/ }).getAttribute('aria-checked'), 'true');
 
-  // 2b. 全局指令维护：原样导入现有内容、编辑私有内容、查看合并预览、软链拆分同步
-  await page.getByRole('tab', { name: '全局指令' }).click();
-  await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).waitFor();
-  // 导入来源收进「从文件导入」菜单，私有内容只用一个 Harness 下拉框切换；不再有按端启用开关
-  assert.equal(await page.locator('#ap-instr-import-source, #ap-instr-enabled').count(), 0);
-  assert.equal(await page.getByRole('button', { name: /更多操作/ }).count(), 0, '全局指令页不再有「更多」菜单');
-  assert.equal(await page.getByText(/外部标记块/).count(), 0, '不再提示自动保留外部标记块');
-  assert.equal(await page.getByRole('button', { name: '预览变更' }).count(), 0, '全局指令页不再有「预览变更」');
-  // 公共与私有均为空、草稿无修改：没有可同步的内容，不显示同步按钮
-  assert.equal(await page.getByRole('button', { name: '同步', exact: true }).count(), 0);
-  await page.getByRole('button', { name: '从文件导入 ▾' }).click();
-  await page.getByRole('menuitem', { name: /Claude Code/ }).waitFor();
-  assert.ok(await page.getByRole('menuitem', { name: /Claude Code/ }).isDisabled(), '未创建文件的端不可导入');
-  await page.getByRole('menuitem', { name: /Codex/ }).click();
-  await page.getByText('已从 Codex（AGENTS.md）导入到公共内容').waitFor();
-  assert.match(await page.locator('#ap-instr-shared').inputValue(), /# 全局协作规则/);
-  // 原样导入：外部工具写入的 CODEGRAPH 块也进入公共内容，由用户自行决定去留
-  assert.match(await page.locator('#ap-instr-shared').inputValue(), /CODEGRAPH_START/);
-  await page.locator('#ap-instr-private').fill('## Codex 私有规则\n- 优先运行最小单测验证');
-  // 有未保存修改时，Tab 上带标记，切到其他视图也能看到
-  assert.equal(await page.getByRole('tab', { name: /全局指令.*未保存/ }).count(), 1, 'Tab 应标记未保存修改');
-  // 最终写入预览默认折叠，展开后实时显示 公共 + 私有
-  assert.equal(await page.locator('.ap-instr-preview').isVisible(), false);
+  await page.getByRole('button', { name: '新建片段' }).click();
+  await page.locator('#ap-rule-title-__new__').fill('DSH 私有规则');
+  await page.locator('#ap-rule-content-__new__').fill('## DSH 原生私有规则\n- 简短汇报执行进展');
+  assert.equal(await page.getByRole('tab', { name: /规则.*未保存/ }).count(), 1, 'Tab 标记未保存修改');
+  await page.getByRole('button', { name: '添加片段' }).click();
+  const dshRule = page.locator('.ap-rule-row', { hasText: 'DSH 私有规则' });
+  await dshRule.waitFor();
+  assert.equal(await page.getByRole('tab', { name: /未保存/ }).count(), 0);
+  // DSH 的 AGENTS.md 原是指向 Codex 文件的软链：开启后拆分为独立文件，不写穿 Codex
+  await dshRule.getByRole('switch', { name: /^DSH 原生：/ }).click();
+  await page.getByText(/已保存规则并写入 DSH 原生/).waitFor();
+  assert.equal((await lstat(join(dshHome, 'AGENTS.md'))).isSymbolicLink(), false);
+  assert.equal(await readFile(join(dshHome, 'AGENTS.md'), 'utf8'), '## DSH 原生私有规则\n- 简短汇报执行进展\n');
+  assert.equal(await readFile(join(homeDir, '.codex', 'AGENTS.md'), 'utf8'), codexAgentsBefore, '只写变化的端');
+  // 预览 DSH 的最终写入内容
   await page.getByText('最终写入预览').click();
-  const codexPreview = await page.locator('.ap-instr-preview').innerText();
-  assert.match(codexPreview, /# 全局协作规则/);
-  assert.match(codexPreview, /## Codex 私有规则/);
-  assert.match(codexPreview, /<!-- CODEGRAPH_START -->/);
-  await page.screenshot({ path: 'artifacts/packages-instructions.png', fullPage: true });
-
-  // Harness 下拉框与「私有内容」标题同一行，宽度按内容收窄
-  const privateTitleBox = await page.getByRole('heading', { name: '私有内容' }).boundingBox();
-  const harnessSelectBox = await page.locator('#ap-instr-harness').boundingBox();
-  assert.ok(Math.abs(harnessSelectBox.y - privateTitleBox.y) < 12, '下拉框应与私有内容标题对齐');
-  assert.ok(harnessSelectBox.width < 220, `下拉框不应拉伸：${harnessSelectBox.width}px`);
-
-  // 切换到 DSH 原生（软链目标），验证软链提示并保存同步
-  await page.locator('#ap-instr-harness').click();
+  await page.locator('#ap-rule-preview-harness').click();
   await page.getByRole('option', { name: /DSH 原生/ }).click();
-  assert.match(await page.locator('#ap-instr-harness').innerText(), /DSH 原生/);
-  await page.getByText(/同步时将拆分为独立文件写入/).waitFor();
-  await page.locator('#ap-instr-private').fill('## DSH 原生私有规则\n- 简短汇报执行进展');
-  await page.getByRole('button', { name: '保存并同步', exact: true }).click();
-  await page.getByText(/已保存并同步指令文件/).waitFor();
-  // 全部端已同步且无修改：同步按钮隐藏
-  assert.equal(await page.getByRole('button', { name: /同步/ }).count(), 0, '已全部同步时不应显示同步按钮');
-  assert.equal(await page.getByText(/同步时将拆分为独立文件写入/).count(), 0, '同步后软链应已拆分为独立文件');
-  assert.equal(await page.getByRole('tab', { name: /未保存/ }).count(), 0, '保存后 Tab 标记消失');
-  assert.equal(await page.locator('.ap-logs').count(), 1, '同步记录显示在全局指令视图');
+  assert.match(await page.locator('.ap-instr-preview').innerText(), /DSH 原生私有规则/);
+  // 片段排序：下移导入的片段
+  await page.getByRole('button', { name: '下移 Codex 现有 AGENTS.md' }).click();
+  await page.waitForFunction(() => document.querySelectorAll('.ap-rule-row')[0]?.textContent.includes('DSH 私有规则'));
+  await page.screenshot({ path: 'artifacts/packages-rules.png', fullPage: true });
 
-  // 3. 切换本机诊断：提示与执行记录不跨视图残留；矩阵汇总 4 端分布；本机导入已移除
-  await page.getByRole('tab', { name: '本机诊断' }).click();
-  assert.equal(await page.locator('.ap-logs').count(), 0, '执行记录不应跨视图显示');
-  assert.equal(await page.locator('.ap-banner-notice').count(), 0, '提示不应跨视图显示');
-  // 切换不自动扫描，需手动点击「开始扫描」
-  await page.getByText(/尚未扫描/).waitFor();
-  assert.equal(await page.locator('.ap-doctor-matrix').count(), 0);
-  await page.screenshot({ path: 'artifacts/packages-doctor-idle.png', clip: { x: 0, y: 0, width: 1360, height: 360 } });
-  await page.getByRole('button', { name: '开始扫描' }).click();
-  await page.getByText(/检测到旧版目录/).waitFor();
-  const codegraphRow = page.locator('.ap-doctor-matrix .ap-matrix-row', { hasText: 'codegraph' });
-  await codegraphRow.waitFor();
-  assert.match(await codegraphRow.innerText(), /未纳管/);
-  assert.equal(await codegraphRow.getByRole('img', { name: /^Codex：未纳管/ }).count(), 1);
-  assert.equal(await codegraphRow.getByRole('img', { name: /^DSH 原生：未配置/ }).count(), 1);
-  const playwrightRow = page.locator('.ap-doctor-matrix .ap-matrix-row', { hasText: 'playwright-mcp' });
-  assert.match(await playwrightRow.innerText(), /受管：playwright-mcp/);
-  const ponytailRows = page.locator('.ap-doctor-matrix .ap-matrix-row', { hasText: 'ponytail' });
-  assert.equal(await ponytailRows.count(), 1, '跨端同名插件应合并为一行');
-  assert.match(await ponytailRows.innerText(), /ponytail@ponytail/);
-  assert.equal(await ponytailRows.getByRole('img', { name: /^Claude Code：未纳管 1\.2\.0/ }).count(), 1);
-  assert.equal(await ponytailRows.getByRole('img', { name: /^Antigravity：未纳管/ }).count(), 1);
-  assert.equal(await page.locator('#ap-doctor-harness').count(), 0, '不再需要逐端下拉切换');
-  assert.equal(await page.getByRole('button', { name: '导入清单' }).count(), 0);
-  const doctorLefts = await page.locator('.ap-doctor-matrix .ap-cells').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().left)));
-  assert.equal(new Set(doctorLefts).size, 1, `诊断矩阵状态列应对齐：${doctorLefts}`);
-  await page.screenshot({ path: 'artifacts/packages-doctor.png', fullPage: true });
-
-  // 4. 窄屏移动端检查无横向溢出（涵盖本机诊断、全局指令与包清单）
+  // 6. 窄屏 390：各视图无横向溢出，表头隐藏、端名并入格子，菜单不超出视口
   await page.setViewportSize({ width: 390, height: 844 });
-  const doctorOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  assert.ok(doctorOverflow <= 2, `移动端本机诊断页出现横向溢出：${doctorOverflow}px`);
-  await page.getByRole('tab', { name: '全局指令' }).click();
-  await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).waitFor();
-  const instrOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  assert.ok(instrOverflow <= 2, `移动端全局指令页出现横向溢出：${instrOverflow}px`);
-  await page.screenshot({ path: 'artifacts/packages-instructions-mobile.png', fullPage: true });
-  // 展开的菜单在窄屏下也不能撑出横向滚动
-  for (const name of ['从文件导入 ▾']) {
-    await page.getByRole('button', { name }).click();
-    await page.getByRole('menu').waitFor();
-    const menuBox = await page.getByRole('menu').boundingBox();
-    assert.ok(menuBox.x >= 0 && menuBox.x + menuBox.width <= 390, `移动端菜单超出视口：${JSON.stringify(menuBox)}`);
-    await page.keyboard.press('Escape');
-    await page.mouse.click(5, 5);
+  for (const name of [/Skills/, /MCP/, /插件/, /规则/]) {
+    await page.getByRole('tab', { name }).click();
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert.ok(overflow <= 2, `移动端出现横向溢出（${name}）：${overflow}px`);
   }
-  // 与设置面板实际宽度（约 585px）一致的截图
-  await page.setViewportSize({ width: 585, height: 1000 });
-  await page.screenshot({ path: 'artifacts/packages-instructions-panel.png', fullPage: true });
-  // 面板宽度下的编辑态：长公共内容（编辑器随内容增高并封顶）、未保存页头与展开的导入菜单
-  const longShared = Array.from({ length: 90 }, (_, i) => `- 第 ${i + 1} 条规则`).join('\n');
-  await page.locator('#ap-instr-shared').fill(longShared);
-  await page.getByText('未保存修改').waitFor();
-  // 未保存时标题与「还原 / 仅保存 / 保存并同步」保持同一行
-  const instrTitleBox = await page.getByRole('heading', { name: 'AGENTS.md / CLAUDE.md' }).boundingBox();
-  const saveSyncBox = await page.getByRole('button', { name: '保存并同步', exact: true }).boundingBox();
-  assert.ok(Math.abs(instrTitleBox.y + instrTitleBox.height / 2 - (saveSyncBox.y + saveSyncBox.height / 2)) < 6, '面板宽度下操作按钮不应换行到标题下方');
-  const editorHeight = (await page.locator('#ap-instr-shared').boundingBox()).height;
-  assert.ok(editorHeight > 300 && editorHeight <= 1000 * 0.6 + 2, `长内容编辑器高度异常：${editorHeight}`);
-  await page.getByRole('button', { name: '从文件导入 ▾' }).click();
-  await page.getByRole('menu').waitFor();
-  await page.screenshot({ path: 'artifacts/packages-instructions-panel-dirty.png' });
-  await page.keyboard.press('Escape');
-  await page.mouse.click(5, 5);
-  // 面板宽度下包清单工具栏（搜索、筛选、检查更新、添加包）保持同一行，状态列仍对齐
-  await page.getByRole('tab', { name: /包清单/ }).click();
-  const searchBox = await page.locator('.ap-search').boundingBox();
-  const addBox = await page.getByRole('button', { name: '添加包' }).boundingBox();
-  assert.ok(Math.abs(searchBox.y + searchBox.height / 2 - (addBox.y + addBox.height / 2)) < 4, '面板宽度下工具栏不应换行');
-  assert.ok(await page.locator('.ap-col-head').isVisible(), '面板宽度下保留端名表头');
-  const panelLefts = await page.locator('.ap-matrix .ap-cells').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().left)));
-  assert.equal(new Set(panelLefts).size, 1, `面板宽度下状态列应对齐：${panelLefts}`);
-  await page.screenshot({ path: 'artifacts/packages-panel.png', fullPage: true });
-  await page.getByRole('tab', { name: '全局指令' }).click();
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('tab', { name: /包清单/ }).click();
-  await page.getByText('Firecrawl Skills').waitFor();
-  // 验证包清单筛选自定义下拉框可展开与筛选
-  await page.locator('#ap-filter-kind').click();
-  await page.getByRole('option', { name: 'MCP Server' }).click();
-  assert.equal(await page.locator('.ap-pkg-card').count(), 1, '按 MCP Server 筛选应只展示 1 个包');
-  await page.locator('#ap-filter-kind').click();
-  await page.getByRole('option', { name: '全部类型' }).click();
-  assert.equal(await page.locator('.ap-pkg-card').count(), 3, '切回全部类型应恢复全部包');
-  // 无匹配时给出「清除筛选」
-  await page.locator('.ap-search').fill('不存在的包');
-  await page.getByRole('button', { name: '清除筛选' }).click();
-  assert.equal(await page.locator('.ap-pkg-card').count(), 3, '清除筛选应恢复全部包');
-  // 窄屏：表头隐藏，状态格换到第二行并显示端名
+  await page.getByRole('tab', { name: /MCP/ }).click();
   assert.equal(await page.locator('.ap-col-head').isVisible(), false, '窄屏隐藏端名表头');
-  assert.ok(await page.locator('.ap-pkg-card .ap-cell-label').first().isVisible(), '窄屏状态格应显示端名');
-  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-  assert.ok(overflow <= 2, `移动端出现横向溢出：${overflow}px`);
+  assert.ok(await page.locator('.ap-pkg-card .ap-cell-label').first().isVisible(), '窄屏格子显示端名');
+  await page.getByRole('button', { name: 'playwright-mcp 更多操作' }).click();
+  const menuBox = await page.getByRole('menu').boundingBox();
+  assert.ok(menuBox.x >= 0 && menuBox.x + menuBox.width <= 390, `移动端菜单超出视口：${JSON.stringify(menuBox)}`);
+  await page.keyboard.press('Escape');
   await page.screenshot({ path: 'artifacts/packages-mobile.png', fullPage: true });
+
+  // 7. 面板宽度 585：工具栏一行、表头与分组标题同一行、各行状态列对齐、标题行不换行
+  await page.setViewportSize({ width: 585, height: 1000 });
+  await page.getByRole('tab', { name: /Skills/ }).click();
+  const searchBox = await page.locator('.ap-search').boundingBox();
+  const addBox = await page.getByRole('button', { name: '添加 Skills 来源' }).boundingBox();
+  assert.ok(Math.abs(searchBox.y + searchBox.height / 2 - (addBox.y + addBox.height / 2)) < 4, '面板宽度下工具栏不应换行');
+  const groupTitleBox = await page.locator('.ap-matrix-group').first().locator('h3').boundingBox();
+  const colHeadBox = await page.locator('.ap-col-head').first().boundingBox();
+  assert.ok(Math.abs(groupTitleBox.y + groupTitleBox.height / 2 - (colHeadBox.y + colHeadBox.height / 2)) < 4, '端名表头应与分组标题同一行');
+  const lefts = await page.locator('.ap-matrix .ap-cells').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().left)));
+  assert.equal(new Set(lefts).size, 1, `状态列应对齐：${lefts}`);
+  const titleHeights = await page.locator('.ap-pkg-card .ap-pkg-title-row').evaluateAll(els => els.map(el => Math.round(el.getBoundingClientRect().height)));
+  assert.ok(titleHeights.every(h => h <= 28), `标题行不应换行：${titleHeights}`);
+  await page.screenshot({ path: 'artifacts/packages-panel.png', fullPage: true });
+  await page.getByRole('tab', { name: /插件/ }).click();
+  await page.screenshot({ path: 'artifacts/packages-plugins-panel.png', fullPage: true });
+  await page.getByRole('tab', { name: /规则/ }).click();
+  await page.screenshot({ path: 'artifacts/packages-rules-panel.png', fullPage: true });
 
   assert.deepEqual(pageErrors, [], `页面报错：${pageErrors.join('; ')}`);
   assert.deepEqual(failedRequests, [], `请求失败：${failedRequests.join('; ')}`);

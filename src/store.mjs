@@ -71,6 +71,13 @@ export function slugifyId(raw) {
     .slice(0, 64);
 }
 
+// 纳管本机已有条目时要原样保留 key（大小写、点号），否则重写时会删掉原条目再建一个新名字
+const KEEP_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
+function keepKey(raw) {
+  const text = String(raw ?? '').trim();
+  return KEEP_KEY_RE.test(text) ? text : slugifyId(text);
+}
+
 export function normalizePackage(input, existing) {
   if (!isPlainObject(input)) throw new Error('包定义必须是对象');
   const repo = normalizeRepoUrl(input.repo ?? existing?.repo ?? '');
@@ -125,10 +132,25 @@ export function normalizePackage(input, existing) {
     ? [...new Set(skillsInput.include.map(s => String(s).trim()).filter(Boolean))]
     : [];
   const skillsMode = skillsInput.mode === 'copy' ? 'copy' : 'symlink';
+  // 逐 Skill 的目标端：{ 端: [skill 名] }；某端没有条目时沿用 include（为空则为全部）
+  const perHarness = {};
+  if (isPlainObject(skillsInput.perHarness)) {
+    for (const harnessId of HARNESS_IDS) {
+      const list = skillsInput.perHarness[harnessId];
+      if (Array.isArray(list)) perHarness[harnessId] = [...new Set(list.map(s => String(s).trim()).filter(Boolean))];
+    }
+  }
+  // 本机纳管的 Skill 没有仓库，记录各自的源目录：{ skill 名: 绝对路径 }
+  const sources = {};
+  if (isPlainObject(skillsInput.sources)) {
+    for (const [name, dir] of Object.entries(skillsInput.sources)) {
+      if (name.trim() && typeof dir === 'string' && dir.trim()) sources[name.trim()] = dir.trim();
+    }
+  }
 
   const mcpInput = isPlainObject(input.mcp) ? input.mcp : (existing?.mcp ?? {});
   const transport = mcpInput.transport === 'http' ? 'http' : 'stdio';
-  const serverName = slugifyId(mcpInput.serverName || id) || id;
+  const serverName = keepKey(mcpInput.serverName) || id;
   const args = Array.isArray(mcpInput.args)
     ? mcpInput.args.map(item => String(item))
     : typeof mcpInput.args === 'string'
@@ -160,8 +182,8 @@ export function normalizePackage(input, existing) {
   }
 
   const pluginInput = isPlainObject(input.plugin) ? input.plugin : (existing?.plugin ?? {});
-  const pluginName = slugifyId(pluginInput.name || id) || id;
-  const pluginMarketplace = slugifyId(pluginInput.marketplace || pluginName) || pluginName;
+  const pluginName = keepKey(pluginInput.name) || id;
+  const pluginMarketplace = keepKey(pluginInput.marketplace) || pluginName;
   // 插件清单声明可装的 Harness（解析仓库得到）；旧条目没有该字段时为空，不做限制
   const pluginHarnesses = Array.isArray(pluginInput.harnesses)
     ? HARNESS_IDS.filter(h => pluginInput.harnesses.includes(h))
@@ -181,6 +203,8 @@ export function normalizePackage(input, existing) {
     skills: {
       include: includeSkills,
       mode: skillsMode,
+      perHarness,
+      sources,
     },
     mcp: {
       serverName,

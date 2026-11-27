@@ -1,6 +1,6 @@
 # dsh-agent-packages
 
-面向 DeepSeek Harness（DSH）的多 Harness Skills & MCP Server 统一版本与安装管理插件。
+面向 DeepSeek Harness（DSH）的多 Harness 统一管理插件：在 Codex、Claude Code、Antigravity、DSH 原生之间统一管理 Skills、MCP、插件与规则（全局指令）。
 
 ## 核心能力
 
@@ -12,9 +12,11 @@
   3. `mcp`：关联 GitHub 仓库与锁定版本号，支持 `{{version}}` 模板变量，安全局部更新 Codex TOML（保留原注释与其他节）和 Claude / Antigravity JSON（原子写入、不覆盖运行时状态）。
   4. `installer`：针对自带 CLI 与多端安装器生命周期的复合项目（如 CodeGraph），支持配置每次操作仅执行一次的全局 CLI 命令（`install` / `upgrade` / `uninstall` / `version` 版本检测）以及各 Harness 的分端接入与卸载命令；全部端卸载完成后才执行全局卸载命令。
 - **GitHub 仓库解析与 AI 深度分析**：默认通过静态规则快速识别仓库类型（区分项目自用 `.claude/skills` 与对外分发的 Skills）、最新 Release / Commit、Skills 列表、插件清单及其 Hooks、npm/Python 包与 CLI 安装器命令；也支持在「添加包」面板的「当前解析 · 切换」中全局指定 Codex / Claude Code / Antigravity 及模型，点击「解析仓库」时浅克隆仓库到隔离临时目录进行只读深度分析，为复合型仓库生成各端安装、升级、卸载与版本检测草稿（仅回填供审阅，绝不自动执行）。
-- **只通过添加进入清单**：粘贴 GitHub 地址解析后添加。添加时可以重命名（包 ID 留空时按名称生成，与已有包冲突时提示重命名）；保存前按包类型和插件清单检查各 Harness 是否支持，不支持的端显示原因，勾选后禁止保存（为该端填写自定义安装命令后可装）；同一来源再次添加只更新名称与目标端（锁定版本不变，版本变化走升级），不重复安装。
-- **全局指令维护（AGENTS.md / CLAUDE.md）**：在 `<DSH_HOME>/dsh-agent-packages/instructions/` 下分别维护跨 Harness 共享的「公共内容（`shared.md`）」与各端独立的「私有内容（`private/<harness>.md`）」，合并后写入 Codex（`~/.codex/AGENTS.md`）、Claude Code（`<claudeConfigDir>/CLAUDE.md`）、Antigravity（`~/.gemini/AGENTS.md`）与 DSH 原生（`~/.dsh/AGENTS.md`）。支持从本机现有文件原样导入、实时预览最终合并内容、Dry-Run 变更预览与全量同步；写入内容严格等于「公共 + 私有」，不再自动保留外部工具注入的标记块（如 CodeGraph 的 `<!-- CODEGRAPH_START -->` 块），遇到软链目标自动拆分为独立文件原子写入且不改动原链接目标。
-- **统一版本检查与批量同步**：一键查更新、一键升级、支持 Dry-Run 预览变更，以及只读扫描本机现有 Skills / 插件 / MCP 状态做诊断（不提供本机导入）。
+- **条目 × 端矩阵**：管理页分 Skills / MCP / 插件 / 规则 4 个视图，每行一个条目、右侧 4 列对齐各端；格子是开关，点亮即安装或同步到该端，熄灭先行内确认再卸载，只有该端步骤成功才翻转。Skills 按来源分组、逐个 Skill × 单端开关（`skills.perHarness`）；复合安装器（如 CodeGraph）与插件同列为「CLI 工具」。
+- **纳管本机已有条目**：打开页面即只读扫描本机，各视图列出「本机未纳管」的 Skills / MCP / 插件 / 规则文件，「纳管」只登记进清单与锁文件，不重装、不改本机配置；MCP 保留原 key 与未建模字段（存入 `mcp.overrides`），Skill 以原目录为源归入「本机 Skills」组。由插件或安装器带来的条目标注「由 X 管理」，Codex 内置插件不列出。
+- **添加新条目**：粘贴 GitHub 地址解析后添加。添加时可以重命名（包 ID 留空时按名称生成，与已有包冲突时提示重命名）；保存前按包类型和插件清单检查各 Harness 是否支持，不支持的端显示原因，勾选后禁止保存（为该端填写自定义安装命令后可装）；同一来源再次添加只更新名称与目标端（锁定版本不变，版本变化走升级），不重复安装。
+- **规则片段（AGENTS.md / CLAUDE.md）**：规则由多条片段组成，保存在 `<DSH_HOME>/dsh-agent-packages/instructions/snippets.json`，每条片段用端开关决定写入 Codex（`~/.codex/AGENTS.md`）、Claude Code（`<claudeConfigDir>/CLAUDE.md`）、Antigravity（`~/.gemini/AGENTS.md`）、DSH 原生（`~/.dsh/AGENTS.md`）中的哪些端，各端文件严格等于开启片段按顺序拼接。保存时只写拼接结果有变化的端；首次读取时由旧的「公共内容 + 各端私有内容」自动迁移（拼接结果逐字节不变，旧文件保留）；本机文件可原样纳管为片段；不再自动保留外部工具注入的标记块（如 CodeGraph 的 `<!-- CODEGRAPH_START -->` 块），遇到软链目标自动拆分为独立文件原子写入且不改动原链接目标。
+- **统一版本检查与批量同步**：一键查更新、一键升级、支持 Dry-Run 预览变更；失效软链、旧版目录、MCP 配置读取失败等诊断提示显示在对应视图。
 - **DSH 设置管理页**：挂载在「设置 → Skills & MCP」，支持桌面端与窄屏视图。
 
 ## 开发与热加载

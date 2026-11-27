@@ -150,6 +150,16 @@ function trimBlankEdgeLines(text) {
   return trimmed.trim() ? trimmed : '';
 }
 
+// 规则片段按顺序拼接出某端的最终文件内容：与 composeInstructionContent 同样去首尾空行、以空行分隔，
+// 所以「公共 + 私有」迁移成两个片段后拼接结果逐字节不变。
+export function composeSnippets(snippets = [], harnessId) {
+  const sections = snippets
+    .filter(snippet => Array.isArray(snippet?.harnesses) && snippet.harnesses.includes(harnessId))
+    .map(snippet => trimBlankEdgeLines(snippet.content))
+    .filter(Boolean);
+  return sections.length ? `${sections.join('\n\n')}\n` : '';
+}
+
 // 由公共内容与单端私有内容合成最终完整文件内容。
 export function composeInstructionContent({ shared = '', privateContent = '' } = {}) {
   const sections = [trimBlankEdgeLines(shared), trimBlankEdgeLines(privateContent)].filter(Boolean);

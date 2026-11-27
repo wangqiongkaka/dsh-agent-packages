@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cp, lstat, mkdir, readdir, readlink, rm, symlink } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readlink, realpath, rm, symlink } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { HARNESS_IDS, HARNESS_META } from './constants.mjs';
 import { normalizeVersion } from './shared.mjs';
@@ -67,6 +67,30 @@ export async function discoverSkillsInDir(repoDir) {
   return found;
 }
 
+// 包内可用的 Skills：有仓库时扫描检出目录，本机纳管组（无仓库）读 skills.sources
+export async function discoverPackageSkills(pkg, repoDir) {
+  if (pkg.repo) return discoverSkillsInDir(repoDir);
+  return Object.entries(pkg.skills?.sources ?? {})
+    .map(([name, dir]) => ({ name, dir, rel: name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// 某端应装的 Skill：有逐端列表时按列表，否则按 include（为空即全部）
+export function selectedSkillNames(pkg, harnessId, availableNames) {
+  const perHarness = pkg.skills?.perHarness?.[harnessId];
+  if (Array.isArray(perHarness)) return availableNames.filter(name => perHarness.includes(name));
+  const include = pkg.skills?.include ?? [];
+  return include.length ? availableNames.filter(name => include.includes(name)) : availableNames;
+}
+
+// 本机纳管 Skill 的源目录：只有其他端仍启用该 Skill（软链指向它）时才保护，最后一个端关闭时允许删除
+function protectedSkillDirs(pkg, harnessId) {
+  const perHarness = pkg.skills?.perHarness ?? {};
+  return Object.entries(pkg.skills?.sources ?? {})
+    .filter(([name]) => Object.entries(perHarness).some(([h, list]) => h !== harnessId && list.includes(name)))
+    .map(([, dir]) => resolve(dir));
+}
+
 export async function syncGitRepo(repoUrl, targetDir, ref, { execImpl = defaultExecFile, dryRun = false } = {}) {
   if (!repoUrl) throw new Error('缺少 GitHub 仓库地址');
   let exists = false;
@@ -128,9 +152,17 @@ function templateVars(pkg, harnessId, repoDir, harnessPaths = {}) {
   };
 }
 
-async function safeRemoveManagedSkillPath(targetPath, allowedSourceRoot, dryRun) {
+async function realOrResolved(p) {
+  try { return await realpath(p); } catch { return resolve(p); }
+}
+
+async function safeRemoveManagedSkillPath(targetPath, allowedSourceRoot, dryRun, protectedDirs = []) {
   let stats;
   try { stats = await lstat(targetPath); } catch { return { removed: false, reason: 'not-found' }; }
+  // 本机纳管 Skill 的源目录可能被其他端软链引用，删掉会连带打断其他端（软链本身可以删）
+  if (!stats.isSymbolicLink() && protectedDirs.includes(await realOrResolved(targetPath))) {
+    return { removed: false, reason: 'protected-source' };
+  }
   if (stats.isSymbolicLink()) {
     const linkTarget = await readlink(targetPath);
     const resolvedTarget = resolve(dirname(targetPath), linkTarget);
@@ -150,12 +182,17 @@ async function installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, pre
   const mode = pkg.skills?.mode === 'copy' ? 'copy' : 'symlink';
   const prevManaged = Array.isArray(prevHarnessLock?.managedPaths) ? prevHarnessLock.managedPaths : [];
 
+  const pickSelected = discovered => {
+    const names = selectedSkillNames(pkg, harnessId, discovered.map(s => s.name));
+    return discovered.filter(s => names.includes(s.name));
+  };
+  const protectedDirs = protectedSkillDirs(pkg, harnessId);
+  const allowedRoot = pkg.repo ? repoDir : null;
+
   if (options.dryRun) {
     let discovered = [];
-    try { discovered = await discoverSkillsInDir(repoDir); } catch { discovered = []; }
-    const selected = pkg.skills?.include?.length
-      ? discovered.filter(s => pkg.skills.include.includes(s.name))
-      : discovered;
+    try { discovered = await discoverPackageSkills(pkg, repoDir); } catch { discovered = []; }
+    const selected = pickSelected(discovered);
     return {
       harness: harnessId,
       action: options.action,
@@ -169,14 +206,13 @@ async function installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, pre
     };
   }
 
-  const discovered = await discoverSkillsInDir(repoDir);
+  const discovered = await discoverPackageSkills(pkg, repoDir);
   if (!discovered.length) {
-    throw new Error(`仓库中未发现任何 SKILL.md（${repoDir}）`);
+    throw new Error(pkg.repo ? `仓库中未发现任何 SKILL.md（${repoDir}）` : '没有可同步的本机 Skill');
   }
-  const selected = pkg.skills?.include?.length
-    ? discovered.filter(s => pkg.skills.include.includes(s.name))
-    : discovered;
-  if (!selected.length) {
+  const selected = pickSelected(discovered);
+  const explicitList = Array.isArray(pkg.skills?.perHarness?.[harnessId]);
+  if (!selected.length && !explicitList) {
     throw new Error(`仓库中未匹配到指定 Skills：${pkg.skills.include.join(', ')}`);
   }
 
@@ -187,6 +223,12 @@ async function installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, pre
 
   for (const skill of selected) {
     const dest = join(skillsDir, skill.name);
+    if (await realOrResolved(dest) === await realOrResolved(skill.dir) && !(await lstat(dest).catch(() => null))?.isSymbolicLink()) {
+      // 该端本身就是本机纳管 Skill 的源目录：原样保留并计为受管
+      managedPaths.push(dest);
+      written.push(skill.name);
+      continue;
+    }
     let existing = null;
     try { existing = await lstat(dest); } catch { existing = null; }
     if (existing) {
@@ -210,7 +252,11 @@ async function installSkillsToHarness(pkg, harnessId, harnessPaths, repoDir, pre
   // 清理上次受管但本次已移除的 skill
   for (const oldPath of prevManaged) {
     if (!managedPaths.includes(oldPath)) {
-      await safeRemoveManagedSkillPath(oldPath, repoDir, false);
+      const res = await safeRemoveManagedSkillPath(oldPath, allowedRoot, false, protectedDirs);
+      if (res.reason === 'protected-source') {
+        managedPaths.push(oldPath);
+        warnings.push(`${oldPath} 是其他端软链的源目录，已保留；先在其他端关闭该 Skill 再关闭此端`);
+      }
     }
   }
 
@@ -464,6 +510,8 @@ export async function applyPackageAction({
   dryRun = false,
   execImpl = defaultExecFile,
   runShell = defaultRunShell,
+  // 端开关等操作传 false：检出目录已存在时直接用，不重新拉取（离线可用，也不会隐式升级分支）
+  syncRepo = true,
 }) {
   const targetHarnesses = (harnesses?.length ? harnesses : pkg.targets).filter(h => HARNESS_IDS.includes(h));
   const repoDir = join(reposDir, pkg.id);
@@ -526,9 +574,14 @@ export async function applyPackageAction({
         } else if (pkg.kind === 'skills-repo') {
           const paths = Array.isArray(prev.managedPaths) ? prev.managedPaths : [];
           let removed = 0;
+          const kept = [];
           for (const p of paths) {
-            const res = await safeRemoveManagedSkillPath(p, repoDir, dryRun);
+            const res = await safeRemoveManagedSkillPath(p, pkg.repo ? repoDir : null, dryRun, protectedSkillDirs(pkg, harnessId));
             if (res.removed) removed++;
+            if (res.reason === 'protected-source') kept.push(p);
+          }
+          if (kept.length) {
+            throw new Error(`${kept.join('、')} 是其他端软链的源目录，未删除；先在其他端关闭这些 Skill`);
           }
           step = {
             harness: harnessId,
@@ -629,7 +682,10 @@ export async function applyPackageAction({
     })
   );
 
-  if (needsRepoClone) {
+  const reuseCheckout = !syncRepo && Boolean(await lstat(repoDir).catch(() => null));
+  if (needsRepoClone && reuseCheckout) {
+    repoSynced = true;
+  } else if (needsRepoClone) {
     try {
       const gitResult = await syncGitRepo(pkg.repo, repoDir, pkg.ref, { execImpl, dryRun });
       repoSynced = !dryRun;
@@ -652,7 +708,19 @@ export async function applyPackageAction({
   }
 
   let sharedStep = null;
-  if (sharedCmd) {
+  const sharedAlreadyInstalled = action === 'install' && Boolean(harnesses?.length) && Boolean(sharedCmd)
+    && Object.entries(nextLock.harnesses).some(([h, entry]) => !targetHarnesses.includes(h) && entry?.status === 'installed');
+  if (sharedAlreadyInstalled) {
+    sharedStep = {
+      harness: 'shared',
+      action,
+      method: 'command',
+      status: 'skipped',
+      detail: '全局 CLI 已由其他端安装，跳过全局安装命令',
+      warnings: [],
+    };
+    steps.push(sharedStep);
+  } else if (sharedCmd) {
     try {
       sharedStep = await runCustomCommand(pkg, 'shared', action, sharedCmd, repoDir, {
         dryRun,
@@ -713,7 +781,9 @@ export async function applyPackageAction({
           action,
           method: 'command',
           status: dryRun ? 'preview' : 'ok',
-          detail: dryRun ? '将随全局命令统一安装' : '已随全局命令完成',
+          detail: sharedStep.status === 'skipped'
+            ? '全局 CLI 已安装，无需该端单独操作'
+            : dryRun ? '将随全局命令统一安装' : '已随全局命令完成',
           warnings: [],
         };
       } else {

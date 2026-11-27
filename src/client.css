@@ -615,37 +615,8 @@
 }
 .ap-empty p { margin-bottom: 12px; }
 
-.ap-doctor-paths {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 9px 11px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--ap-line) 70%, transparent);
-  background: color-mix(in srgb, var(--ap-text) 2.5%, transparent);
-}
-.ap-doctor-path-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 12px;
-  min-width: 0;
-}
-.ap-doctor-path-label {
-  flex-shrink: 0;
-  white-space: nowrap;
-  color: var(--ap-muted);
-  min-width: 62px;
-}
-.ap-doctor-path-row > code {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
 .ap-mini-list {
   margin-top: 2px;
-}
-.ap-doctor-empty {
-  margin-top: 0;
 }
 .ap-mini-list {
   list-style: none;
@@ -856,23 +827,24 @@
 }
 .ap-matrix-row > .ap-pkg-actions,
 .ap-matrix-row > .ap-badge { justify-self: end; }
-.ap-col-head {
-  padding: 10px 14px 2px;
-  border-top: 0;
-  font-size: 11px;
-  color: var(--ap-muted);
-}
 .ap-matrix-group {
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  column-gap: 12px;
+  padding: 10px 14px 8px;
+  border-top: 1px solid var(--ap-line);
+}
+.ap-matrix > .ap-matrix-group:first-child { border-top: 0; }
+.ap-group-title {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
-  padding: 12px 14px 4px;
-  border-top: 1px solid var(--ap-line);
+  gap: 6px 10px;
+  min-width: 0;
 }
-.ap-col-head + .ap-matrix-group { border-top: 0; padding-top: 0; }
 .ap-matrix-group h3 { font-size: 13px; font-weight: 600; }
+.ap-col-head { font-size: 11px; color: var(--ap-muted); }
 .ap-group-count { margin-left: 4px; font-weight: 400; color: var(--ap-muted); }
 .ap-matrix-empty { margin: 0; padding: 4px 14px 12px; font-size: 12px; color: var(--ap-muted); }
 .ap-matrix > .ap-editor { margin: 8px; }
@@ -883,7 +855,7 @@
   align-items: center;
   justify-content: center;
   gap: 5px;
-  width: 44px;
+  width: 40px;
 }
 .ap-cell.is-muted { opacity: 0.5; }
 .ap-cell-label { display: none; }
@@ -900,9 +872,23 @@
 
 /* ---------- 包行 ---------- */
 .ap-row-main { min-width: 0; }
+/* 信息列按自身宽度取舍：放不下时先隐藏类型徽章（详情与类型筛选里仍可见），保住包名与版本 */
+.ap-pkg-card > .ap-row-main { container: pkgmain / inline-size; }
+@container pkgmain (max-width: 260px) {
+  .ap-pkg-title-row > .ap-badge-kind { display: none; }
+}
 .ap-pkg-card.is-error { box-shadow: inset 2px 0 0 var(--ap-error); }
 .ap-pkg-card.is-warn { box-shadow: inset 2px 0 0 var(--ap-warn); }
 .ap-pkg-card.is-busy { background: color-mix(in srgb, var(--ap-accent) 7%, transparent); }
+.ap-pkg-card .ap-pkg-title-row { flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+/* 徽章保持完整，空间不足时只截断包名（悬停或展开可看全名） */
+.ap-pkg-card .ap-pkg-title-row > .ap-badge { flex-shrink: 0; white-space: nowrap; }
+.ap-pkg-card .ap-pkg-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ap .ap-row-toggle {
   appearance: none;
   display: inline-flex;
@@ -915,9 +901,11 @@
   color: inherit;
   font: inherit;
   text-align: left;
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
   cursor: pointer;
-  flex-shrink: 1;
+  flex: 0 1 auto;
+  min-width: 4em;
 }
 .ap-row-toggle:hover .ap-pkg-title { text-decoration: underline; text-underline-offset: 3px; }
 .ap-row-chevron { flex-shrink: 0; color: var(--ap-muted); transition: transform 150ms ease; }
@@ -965,30 +953,83 @@
 .ap-detail-error { display: block; color: var(--ap-error); }
 
 /* ---------- 本机诊断 ---------- */
-.ap-doctor-warnings { margin-bottom: 12px; }
-.ap-doctor-warnings h3 { font-size: 13px; font-weight: 600; }
-.ap-doctor-name { font-size: 12px; }
-.ap-doctor-matrix + .ap-help { margin-top: 8px; }
 .ap-banner-notice.is-warn {
   color: var(--ap-warn);
   border-color: color-mix(in srgb, var(--ap-warn) 45%, transparent);
 }
-.ap-doctor-paths-wrap { margin-top: 14px; }
-.ap-doctor-path-block { display: flex; flex-direction: column; gap: 4px; }
-.ap-doctor-path-block strong { font-size: 12px; }
 
 /* 窄面板：状态列移到第二行并显示端名，避免挤压包名 */
 @container ap (max-width: 460px) {
   .ap-matrix { display: flex; flex-direction: column; }
   .ap-col-head { display: none; }
+  .ap-matrix-group { display: flex; }
   .ap-matrix-row { grid-template-columns: minmax(0, 1fr) auto; row-gap: 8px; }
   .ap-matrix-row > .ap-cells { grid-column: 1 / -1; grid-row: 2; flex-wrap: wrap; gap: 4px 14px; padding-left: 18px; }
   .ap-matrix-row > .ap-row-reason { margin-top: 0; }
   .ap-cell { width: auto; }
   .ap-cell-label { display: inline; font-size: 11px; color: var(--ap-muted); }
-  .ap-matrix-group { padding-top: 10px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ap-row-chevron, .ap-select-chevron, .ap-select-trigger { transition: none; }
+}
+
+/* ---------- 端开关 ---------- */
+.ap-tab-count { margin-left: 6px; font-weight: 400; opacity: 0.75; }
+.ap .ap-switch {
+  appearance: none;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ap-switch:hover:not(:disabled) {
+  border-color: var(--ap-line);
+  background: color-mix(in srgb, var(--ap-text) 5%, transparent);
+}
+.ap-switch:disabled { cursor: default; }
+.ap-switch.is-blocked { opacity: 0.35; cursor: not-allowed; }
+.ap-switch.is-busy .ap-glyph { animation: ap-pulse 1s ease-in-out infinite; }
+@keyframes ap-pulse { 50% { opacity: 0.3; } }
+
+/* ---------- Skills 分组与本机未纳管 ---------- */
+.ap-skill-row { padding-top: 6px; padding-bottom: 6px; }
+.ap-skill-row .ap-row-main { padding-left: 18px; }
+.ap-skill-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.ap-skill-row + .ap-skill-group,
+.ap-skill-row + .ap-matrix-group { border-top-color: var(--ap-line); }
+.ap-unmanaged-row .ap-row-main { display: flex; flex-direction: column; gap: 2px; }
+.ap-unmanaged-note { margin-top: 0; }
+.ap-confirm-row { padding-top: 0; border-top: 0; }
+.ap-local-notes { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.ap-local-notes .ap-help { margin-top: 0; }
+.ap-warning-list { margin-top: 0; }
+
+/* ---------- 规则片段 ---------- */
+.ap-rule-actions .ap-actions, .ap-rule-actions { gap: 4px; }
+.ap-rule-editor { display: flex; flex-direction: column; gap: 10px; }
+.ap-rule-new { display: block; padding: 12px 14px; }
+.ap-rule-editor-actions { justify-content: flex-end; }
+.ap-rule-preview { margin-top: 14px; }
+.ap-rule-preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ap-switch.is-busy .ap-glyph { animation: none; }
 }

@@ -1,8 +1,19 @@
 import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
-import { normalizeVersion, unsupportedReason } from './shared.mjs';
-import { PackageStore, normalizePackage, normalizeRepoUrl, normalizeSettings } from './store.mjs';
+import { composeSnippets, normalizeVersion, unsupportedReason } from './shared.mjs';
+import { access, realpath } from 'node:fs/promises';
+import { join } from 'node:path';
+import { PackageStore, normalizePackage, normalizeRepoUrl, normalizeSettings, slugifyId } from './store.mjs';
+import { readCodexMcpServers, readJsonMcpServers, renderMcpConfigForHarness } from './config-editors.mjs';
 import { checkPackageUpdate, inspectGitHubRepo } from './github-inspector.mjs';
-import { applyPackageAction, defaultExecFile, defaultRunShell, probeSharedCliVersion } from './installer.mjs';
+import {
+  applyPackageAction,
+  defaultExecFile,
+  defaultRunShell,
+  discoverPackageSkills,
+  probeSharedCliVersion,
+  selectedSkillNames,
+  syncGitRepo,
+} from './installer.mjs';
 import { analyzeRepoWithHarness, defaultSpawnWithInput, listAnalyzerModels } from './repo-analyzer.mjs';
 import { readInstalledPlugins, scanLocalEnvironment } from './scanner.mjs';
 import {
@@ -25,6 +36,149 @@ function findLivePlugin(livePlugins, pkg, harnessId) {
   return (livePlugins[harnessId]?.plugins ?? []).find(
     p => p.name === pkg.plugin.name && (harnessId === 'antigravity' || p.marketplace === pkg.plugin.marketplace)
   ) ?? null;
+}
+
+const LOCAL_SKILLS_ID = 'local-skills';
+// 本项目 MCP 模型已覆盖的字段；纳管时其余字段存进 overrides，重写配置时原样保留
+const MCP_MODELED_KEYS = ['command', 'args', 'env', 'env_vars', 'url', 'headers', 'http_headers'];
+
+function uniquePackageId(packages, base) {
+  const root = slugifyId(base) || 'item';
+  let id = root;
+  for (let n = 2; packages.some(p => p.id === id); n++) id = `${root}-${n}`;
+  return id;
+}
+
+async function pathExists(p) {
+  try { await access(p); return true; } catch { return false; }
+}
+
+async function readRawMcpServer(harnessPaths, harnessId, serverName) {
+  const target = harnessPaths[harnessId];
+  if (!target?.mcpFile) return null;
+  const servers = target.mcpFormat === 'toml'
+    ? await readCodexMcpServers(target.mcpFile)
+    : await readJsonMcpServers(target.mcpFile);
+  return servers?.[serverName] ?? null;
+}
+
+// 把某端原始 MCP 配置还原成本项目的 mcp 定义；"${KEY}" 形式的值视为宿主机环境变量引用
+function mcpSpecFromRaw(serverName, raw) {
+  const env = {};
+  const envRefs = Array.isArray(raw.env_vars) ? raw.env_vars.map(String) : [];
+  if (raw.env && typeof raw.env === 'object') {
+    for (const [key, value] of Object.entries(raw.env)) {
+      const ref = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(String(value));
+      if (ref && ref[1] === key) envRefs.push(key);
+      else if (typeof value === 'string' && value !== '') env[key] = value;
+    }
+  }
+  return {
+    serverName,
+    transport: raw.url ? 'http' : 'stdio',
+    command: typeof raw.command === 'string' ? raw.command : '',
+    args: Array.isArray(raw.args) ? raw.args.map(String) : [],
+    url: typeof raw.url === 'string' ? raw.url : '',
+    env,
+    envRefs: [...new Set(envRefs)],
+    headers: { ...(raw.headers ?? {}), ...(raw.http_headers ?? {}) },
+  };
+}
+
+function mcpOverrideFromRaw(raw) {
+  return Object.fromEntries(Object.entries(raw).filter(([key]) => !MCP_MODELED_KEYS.includes(key)));
+}
+
+// Skills 视图：每个 Skill × 每个端的启用与安装状态
+function buildSkillItems(pkg, availableNames, lockEntry, harnessPaths, scan) {
+  const names = availableNames.length
+    ? availableNames
+    : [...new Set([
+        ...pkg.skills.include,
+        ...HARNESS_IDS.flatMap(h => (lockEntry?.harnesses?.[h]?.managedPaths ?? []).map(p => p.split('/').pop())),
+      ])].sort((a, b) => a.localeCompare(b));
+  const selectedByHarness = Object.fromEntries(HARNESS_IDS.map(h => [
+    h,
+    pkg.targets.includes(h) ? selectedSkillNames(pkg, h, names) : [],
+  ]));
+  return names.map(name => {
+    const harnesses = {};
+    for (const h of HARNESS_IDS) {
+      const hLock = lockEntry?.harnesses?.[h];
+      const managedPath = join(harnessPaths[h].skillsDir, name);
+      const onDisk = (scan?.harnesses?.[h]?.skills ?? []).some(item => item.name === name && !item.broken);
+      const installed = (hLock?.managedPaths ?? []).includes(managedPath) && onDisk;
+      const enabled = selectedByHarness[h].includes(name);
+      harnesses[h] = {
+        enabled,
+        status: enabled && hLock?.status === 'failed' ? 'failed'
+          : installed ? 'installed'
+            : enabled ? 'not-installed'
+              : 'unselected',
+        lastError: enabled ? (hLock?.lastError || '') : '',
+      };
+    }
+    return { name, harnesses };
+  });
+}
+
+// 本机扫描结果按资源类型汇总：未纳管（可纳管）、由插件 / 安装器管理（只展示）
+function summarizeLocal(scan) {
+  const unmanaged = { skills: new Map(), mcp: new Map(), plugins: new Map() };
+  const owned = { skills: new Map(), mcp: new Map(), plugins: new Map() };
+  const builtinPlugins = new Set();
+  const put = (map, key, base, harnessId, detail) => {
+    if (!map.has(key)) map.set(key, { ...base, harnesses: {} });
+    map.get(key).harnesses[harnessId] = detail;
+  };
+  for (const h of HARNESS_IDS) {
+    const info = scan.harnesses[h];
+    if (!info) continue;
+    for (const skill of info.skills) {
+      if (skill.broken || skill.managedBy) continue;
+      const target = skill.ownedBy ? owned.skills : unmanaged.skills;
+      put(target, skill.name, { name: skill.name, ownedBy: skill.ownedBy || null }, h, {
+        path: skill.path,
+        isSymlink: skill.isSymlink,
+        sourceRepo: skill.sourceRepo || '',
+      });
+    }
+    for (const server of info.mcpServers) {
+      if (server.managedBy) continue;
+      const target = server.ownedBy ? owned.mcp : unmanaged.mcp;
+      put(target, server.serverName, { name: server.serverName, ownedBy: server.ownedBy || null }, h, { transport: server.transport });
+    }
+    for (const plugin of info.plugins ?? []) {
+      if (plugin.managedBy) continue;
+      if (plugin.builtin) { builtinPlugins.add(`${plugin.name}@${plugin.marketplace}`); continue; }
+      const target = plugin.ownedBy ? owned.plugins : unmanaged.plugins;
+      // 同名不同市场是不同的插件，分行列出；Antigravity 没有市场名，并入第一个同名行
+      const key = plugin.marketplace
+        ? `${plugin.name}@${plugin.marketplace}`
+        : ([...target.keys()].find(k => k.startsWith(`${plugin.name}@`)) || `${plugin.name}@`);
+      put(target, key, {
+        key,
+        name: plugin.name,
+        marketplace: plugin.marketplace || target.get(key)?.marketplace || '',
+        ownedBy: plugin.ownedBy || null,
+      }, h, { version: plugin.version || '', repo: plugin.repo || '', marketplace: plugin.marketplace || '' });
+    }
+  }
+  const list = map => [...map.values()].sort((a, b) => (a.key || a.name).localeCompare(b.key || b.name));
+  return {
+    scannedAt: scan.scannedAt,
+    warnings: scan.warnings,
+    harnesses: Object.fromEntries(HARNESS_IDS.map(h => [h, {
+      skillsDir: scan.harnesses[h]?.skillsDir || '',
+      mcpFile: scan.harnesses[h]?.mcpFile || '',
+      instructionsFile: scan.harnesses[h]?.instructionsFile || '',
+      mcpError: scan.harnesses[h]?.mcpError || '',
+      skillsCount: scan.harnesses[h]?.skillsCount ?? 0,
+    }])),
+    unmanaged: { skills: list(unmanaged.skills), mcp: list(unmanaged.mcp), plugins: list(unmanaged.plugins) },
+    owned: { skills: list(owned.skills), mcp: list(owned.mcp), plugins: list(owned.plugins) },
+    builtinPluginCount: builtinPlugins.size,
+  };
 }
 
 export class PackageManagerService {
@@ -136,6 +290,28 @@ export class PackageManagerService {
       };
     });
 
+    // 本机扫描是只读的，随 state 一起返回，各视图据此列出未纳管项与诊断提示
+    let scan;
+    try {
+      scan = await scanLocalEnvironment({ harnessPaths, manifest, lock });
+    } catch (error) {
+      // 扫描是只读辅助信息，失败时降级为空结果加提示，不阻断页面加载
+      const warning = { harness: '本机', kind: 'scan-error', message: `本机扫描失败：${error.message}` };
+      scan = {
+        scannedAt: new Date().toISOString(),
+        harnesses: {},
+        warnings: [{ ...warning, area: 'skills' }, { ...warning, area: 'mcp' }, { ...warning, area: 'plugins' }],
+      };
+    }
+    for (const pkg of packages) {
+      if (pkg.kind !== 'skills-repo') continue;
+      let available = [];
+      try {
+        available = (await discoverPackageSkills(pkg, join(this.store.reposDir, pkg.id))).map(skill => skill.name);
+      } catch { available = []; }
+      pkg.skillItems = buildSkillItems(pkg, available, lock.packages[pkg.id], harnessPaths, scan);
+    }
+
     return {
       rootDir: this.root,
       manifestFile: this.store.manifestFile,
@@ -155,6 +331,7 @@ export class PackageManagerService {
       },
       packages,
       instructions,
+      local: summarizeLocal(scan),
     };
   }
 
@@ -262,8 +439,18 @@ export class PackageManagerService {
           }
           const existing = existingIndex >= 0 ? manifest.packages[existingIndex] : undefined;
           // 重复添加只采用新名称与目标端；锁定版本、自定义命令等沿用原条目，版本变化走「升级」
+          // 编辑面板不提交逐 Skill 目标端、本机 Skill 源目录与纳管 MCP 的额外字段，保存时从原条目继承
+          const withPreserved = pkg => (!existing ? pkg : {
+            ...pkg,
+            skills: {
+              ...(pkg.skills ?? existing.skills),
+              perHarness: pkg.skills?.perHarness ?? existing.skills.perHarness,
+              sources: pkg.skills?.sources ?? existing.skills.sources,
+            },
+            mcp: { ...(pkg.mcp ?? existing.mcp), overrides: pkg.mcp?.overrides ?? existing.mcp.overrides },
+          });
           const next = !existing ? rawPkg
-            : originalId ? { ...rawPkg, id: existing.id }
+            : originalId ? withPreserved({ ...rawPkg, id: existing.id })
               : { ...existing, name: rawPkg.name || existing.name, targets: rawPkg.targets ?? existing.targets };
           normalized = normalizePackage(next, existing);
         } catch (error) {
@@ -588,97 +775,321 @@ export class PackageManagerService {
         };
       }
 
-      case 'instructions.save': {
-        const dryRun = Boolean(input.dryRun);
-        await this.instructionsStore.saveAll({
-          shared: input.shared,
-          harnesses: input.harnesses,
+      case 'rules.save': {
+        if (!Array.isArray(input.snippets)) throw new HttpError(400, '缺少 snippets 数组');
+        const before = (await this.instructionsStore.readSnippets()).snippets;
+        const saved = await this.instructionsStore.writeSnippets(input.snippets);
+        // 只写拼接结果因本次保存而变化的端；没有开启片段的端保持文件原状
+        const changed = HARNESS_IDS.filter(h => {
+          const next = composeSnippets(saved, h);
+          return next && next !== composeSnippets(before, h);
         });
-        let steps = [];
-        if (input.syncNow) {
-          const result = await syncInstructions({
-            store: this.instructionsStore,
-            harnessPaths: await currentPaths(),
-            harnesses: Array.isArray(input.targetHarnesses) ? input.targetHarnesses : undefined,
-            dryRun,
-          });
-          steps = result.steps;
-        }
-        const errorCount = steps.filter(s => s.status === 'error').length;
-        const message = !input.syncNow
-          ? '已保存全局指令内容'
-          : dryRun
-            ? `已保存内容并生成同步预览（${steps.length} 端）`
-            : errorCount
-              ? `已保存内容，同步存在 ${errorCount} 个失败项，请查看下方日志`
-              : `已保存并同步指令文件（${steps.filter(s => s.status === 'ok').length}/${steps.length} 端）`;
+        const steps = changed.length
+          ? (await syncInstructions({ store: this.instructionsStore, harnessPaths: await currentPaths(), harnesses: changed })).steps
+          : [];
+        const errorCount = steps.filter(step => step.status === 'error').length;
+        const labels = changed.map(h => HARNESS_META[h].label).join('、');
         return {
-          message,
-          dryRun,
+          message: !changed.length
+            ? '已保存规则，各端文件无需改动'
+            : errorCount
+              ? `已保存规则，${errorCount} 端写入失败，请查看执行记录`
+              : `已保存规则并写入 ${labels}`,
           steps,
           state: await this.state(),
         };
       }
 
-      case 'instructions.sync': {
+      case 'rules.sync': {
         const dryRun = Boolean(input.dryRun);
         const result = await syncInstructions({
           store: this.instructionsStore,
           harnessPaths: await currentPaths(),
           harnesses: Array.isArray(input.harnesses) ? input.harnesses : undefined,
           dryRun,
-          draft: input.draft ?? null,
         });
         const errorCount = result.steps.filter(s => s.status === 'error').length;
         const okCount = result.steps.filter(s => s.status === 'ok').length;
-        const message = dryRun
-          ? `指令同步预览完成（涉及 ${result.steps.length} 端）`
-          : errorCount
-            ? `指令同步结束，其中 ${errorCount} 端失败，请查看下方日志`
-            : `指令同步完成（${okCount}/${result.steps.length} 端）`;
         return {
-          message,
+          message: dryRun
+            ? `规则同步预览完成（涉及 ${result.steps.length} 端）`
+            : errorCount
+              ? `规则同步结束，其中 ${errorCount} 端失败，请查看执行记录`
+              : `规则同步完成（${okCount}/${result.steps.length} 端）`,
           dryRun,
           steps: result.steps,
           state: await this.state(),
         };
       }
 
-      case 'instructions.import': {
+      case 'rules.import': {
         const harnessId = typeof input.harness === 'string' ? input.harness.trim() : '';
-        const target = input.target === 'private' ? 'private' : 'shared';
         if (!HARNESS_IDS.includes(harnessId)) {
           throw new HttpError(400, `不支持的 Harness：${harnessId || '空'}`);
         }
         let imported;
         try {
-          imported = await importInstructionFromHarness({
-            harnessId,
-            harnessPaths: await currentPaths(),
-          });
+          imported = await importInstructionFromHarness({ harnessId, harnessPaths: await currentPaths() });
         } catch (error) {
           throw new HttpError(error.message.includes('不存在') ? 404 : 400, error.message);
         }
-
-        let nextState;
-        if (input.save) {
-          if (target === 'shared') {
-            await this.instructionsStore.saveAll({ shared: imported.content });
-          } else {
-            await this.instructionsStore.saveAll({
-              harnesses: { [harnessId]: { privateContent: imported.content } },
-            });
-          }
-          nextState = await this.state();
-        }
-        const label = HARNESS_META[harnessId].label;
-        const targetLabel = target === 'shared' ? '公共内容' : `${label} 私有内容`;
         return {
-          message: `已从 ${label}（${HARNESS_META[harnessId].instructionsFileName}）导入到${targetLabel}`,
-          target,
+          message: `已读取 ${HARNESS_META[harnessId].label} 的 ${HARNESS_META[harnessId].instructionsFileName}`,
           ...imported,
-          ...(nextState ? { state: nextState } : {}),
         };
+      }
+
+      case 'package.toggleHarness': {
+        const harnessId = input.harness;
+        if (!HARNESS_IDS.includes(harnessId)) throw new HttpError(400, `不支持的 Harness：${harnessId}`);
+        const enabled = Boolean(input.enabled);
+        const manifest = await this.store.readManifest();
+        const lock = await this.store.readLock();
+        const index = manifest.packages.findIndex(p => p.id === input.id);
+        if (index < 0) throw new HttpError(404, `未找到包「${input.id}」`);
+        const pkg = manifest.packages[index];
+        const label = HARNESS_META[harnessId].label;
+        if (enabled) {
+          const reason = unsupportedReason(pkg, harnessId);
+          if (reason) throw new HttpError(400, `${label}${reason}`);
+        }
+        const workPkg = enabled
+          ? normalizePackage({ ...pkg, targets: [...new Set([...pkg.targets, harnessId])] }, pkg)
+          : pkg;
+        const result = await applyPackageAction({
+          pkg: workPkg,
+          action: enabled ? 'install' : 'uninstall',
+          harnesses: [harnessId],
+          syncRepo: false,
+          lockEntry: lock.packages[pkg.id] ?? {},
+          harnessPaths: await currentPaths(),
+          reposDir: this.store.reposDir,
+          rootDir: this.root,
+          dryRun: false,
+          execImpl: this.execImpl,
+          runShell: this.runShell,
+        });
+        const step = result.steps.find(item => item.harness === harnessId);
+        const failed = result.steps.some(item => item.status === 'error');
+        // 只有该端步骤成功才翻转开关；跳过（未配置命令等）保持原状，失败则记录以便重试
+        const ok = step?.status === 'ok' && !failed;
+        const nextLock = result.lockEntry;
+        if (ok && !enabled) {
+          delete nextLock.harnesses[harnessId];
+        }
+        if (ok || (enabled && failed)) {
+          const targets = enabled
+            ? [...new Set([...pkg.targets, harnessId])]
+            : pkg.targets.filter(h => h !== harnessId);
+          manifest.packages[index] = normalizePackage({ ...pkg, targets }, pkg);
+          await this.store.writeManifest(manifest);
+        }
+        lock.packages[pkg.id] = nextLock;
+        await this.store.writeLock(lock);
+        return {
+          ok,
+          message: ok
+            ? `已${enabled ? '在' : '从'} ${label} ${enabled ? '启用' : '移除'}「${pkg.name}」`
+            : failed
+              ? `「${pkg.name}」在 ${label} ${enabled ? '安装' : '卸载'}失败，请查看执行记录`
+              : `「${pkg.name}」在 ${label} 未变更：${step?.detail || '没有可执行的步骤'}`,
+          steps: result.steps,
+          state: await this.state(),
+        };
+      }
+
+      case 'skill.toggle': {
+        const harnessId = input.harness;
+        if (!HARNESS_IDS.includes(harnessId)) throw new HttpError(400, `不支持的 Harness：${harnessId}`);
+        const enabled = Boolean(input.enabled);
+        const manifest = await this.store.readManifest();
+        const lock = await this.store.readLock();
+        const index = manifest.packages.findIndex(p => p.id === input.id);
+        if (index < 0) throw new HttpError(404, `未找到包「${input.id}」`);
+        const pkg = manifest.packages[index];
+        if (pkg.kind !== 'skills-repo') throw new HttpError(400, `「${pkg.name}」不是 Skills 来源`);
+        const repoDir = join(this.store.reposDir, pkg.id);
+        if (pkg.repo && !(await pathExists(repoDir))) {
+          await syncGitRepo(pkg.repo, repoDir, pkg.ref, { execImpl: this.execImpl });
+        }
+        const available = (await discoverPackageSkills(pkg, repoDir)).map(item => item.name);
+        const fullSet = pkg.skills.include.length ? available.filter(n => pkg.skills.include.includes(n)) : available;
+        const names = input.skill ? [String(input.skill)] : (enabled ? fullSet : available);
+        const unknown = names.filter(name => !available.includes(name));
+        if (unknown.length) throw new HttpError(404, `「${pkg.name}」中没有 Skill：${unknown.join('、')}`);
+        const current = pkg.targets.includes(harnessId) ? selectedSkillNames(pkg, harnessId, available) : [];
+        const next = enabled
+          ? available.filter(name => current.includes(name) || names.includes(name))
+          : current.filter(name => !names.includes(name));
+        const perHarness = { ...pkg.skills.perHarness };
+        // 选中全部且没有 include 过滤时不写逐端列表，上游新增的 Skill 会自动跟上
+        if (pkg.repo && !pkg.skills.include.length && next.length === available.length) delete perHarness[harnessId];
+        else perHarness[harnessId] = next;
+        if (!next.length) delete perHarness[harnessId];
+        const targets = next.length
+          ? [...new Set([...pkg.targets, harnessId])]
+          : pkg.targets.filter(h => h !== harnessId);
+        const nextPkg = normalizePackage({ ...pkg, targets, skills: { ...pkg.skills, perHarness } }, pkg);
+        const result = await applyPackageAction({
+          pkg: next.length ? nextPkg : pkg,
+          action: next.length ? 'install' : 'uninstall',
+          harnesses: [harnessId],
+          syncRepo: false,
+          lockEntry: lock.packages[pkg.id] ?? {},
+          harnessPaths: await currentPaths(),
+          reposDir: this.store.reposDir,
+          rootDir: this.root,
+          dryRun: false,
+          execImpl: this.execImpl,
+          runShell: this.runShell,
+        });
+        const step = result.steps.find(item => item.harness === harnessId);
+        const ok = step?.status === 'ok' && !result.steps.some(item => item.status === 'error');
+        const nextLock = result.lockEntry;
+        if (ok) {
+          if (!next.length) delete nextLock.harnesses[harnessId];
+          manifest.packages[index] = nextPkg;
+          if (!pkg.repo) {
+            // 本机 Skills 组：任何端都不再启用的 Skill 已随最后一个端删除，从组内移除；组空了就整组移除
+            const stillUsed = new Set(Object.values(nextPkg.skills.perHarness).flat());
+            const sources = Object.fromEntries(Object.entries(nextPkg.skills.sources).filter(([n]) => stillUsed.has(n)));
+            manifest.packages[index] = normalizePackage({ ...nextPkg, skills: { ...nextPkg.skills, sources } }, nextPkg);
+            if (!Object.keys(sources).length) {
+              manifest.packages.splice(index, 1);
+              delete lock.packages[pkg.id];
+            }
+          }
+          await this.store.writeManifest(manifest);
+        }
+        if (manifest.packages.some(p => p.id === pkg.id)) lock.packages[pkg.id] = nextLock;
+        await this.store.writeLock(lock);
+        const what = input.skill ? `「${input.skill}」` : `「${pkg.name}」的全部 Skill`;
+        const label = HARNESS_META[harnessId].label;
+        return {
+          ok,
+          message: ok
+            ? `已${enabled ? '在' : '从'} ${label} ${enabled ? '启用' : '移除'}${what}`
+            : `${what}在 ${label} ${enabled ? '启用' : '移除'}失败：${step?.detail || '请查看执行记录'}`,
+          steps: result.steps,
+          state: await this.state(),
+        };
+      }
+
+      case 'local.adopt': {
+        const area = input.area;
+        const name = typeof input.name === 'string' ? input.name.trim() : '';
+        if (!name) throw new HttpError(400, '缺少要纳管的名称');
+        const harnessPaths = await currentPaths();
+        const manifest = await this.store.readManifest();
+        const lock = await this.store.readLock();
+        const local = summarizeLocal(await scanLocalEnvironment({ harnessPaths, manifest, lock }));
+        const now = new Date().toISOString();
+
+        if (area === 'mcp') {
+          const entry = local.unmanaged.mcp.find(item => item.name === name);
+          if (!entry) throw new HttpError(404, `本机没有未纳管的 MCP「${name}」`);
+          const present = HARNESS_IDS.filter(h => entry.harnesses[h]);
+          const raws = {};
+          for (const h of present) raws[h] = await readRawMcpServer(harnessPaths, h, name);
+          const base = raws[present.find(h => raws[h])];
+          if (!base) throw new HttpError(404, `读取 MCP「${name}」配置失败`);
+          const spec = mcpSpecFromRaw(name, base);
+          const overrides = {};
+          for (const h of present) {
+            if (!raws[h]) continue;
+            let rendered = null;
+            try { rendered = renderMcpConfigForHarness(h, spec).config; } catch { rendered = null; }
+            const extra = rendered
+              ? Object.fromEntries(Object.entries(raws[h]).filter(([key, value]) => JSON.stringify(rendered[key]) !== JSON.stringify(value)))
+              : mcpOverrideFromRaw(raws[h]);
+            if (Object.keys(extra).length) overrides[h] = extra;
+          }
+          const pkg = normalizePackage({
+            id: uniquePackageId(manifest.packages, name),
+            name,
+            kind: 'mcp',
+            repo: '',
+            targets: present,
+            mcp: { ...spec, overrides },
+          });
+          manifest.packages.push(pkg);
+          lock.packages[pkg.id] = {
+            harnesses: Object.fromEntries(present.map(h => [h, {
+              status: 'installed', method: 'adapter', managedServerKey: name, installedAt: now, lastError: '',
+            }])),
+          };
+          await this.store.writeManifest(manifest);
+          await this.store.writeLock(lock);
+          return { message: `已纳管 MCP「${name}」，未改动本机配置`, state: await this.state() };
+        }
+
+        if (area === 'skill') {
+          const entry = local.unmanaged.skills.find(item => item.name === name);
+          if (!entry) throw new HttpError(404, `本机没有未纳管的 Skill「${name}」`);
+          const present = HARNESS_IDS.filter(h => entry.harnesses[h]);
+          let index = manifest.packages.findIndex(p => p.id === LOCAL_SKILLS_ID);
+          const existing = index >= 0 ? manifest.packages[index] : null;
+          if (existing?.skills.sources[name]) throw new HttpError(409, `「本机 Skills」中已有同名 Skill「${name}」`);
+          const source = await realpath(entry.harnesses[present[0]].path);
+          const perHarness = { ...(existing?.skills.perHarness ?? {}) };
+          for (const h of present) perHarness[h] = [...new Set([...(perHarness[h] ?? []), name])];
+          const pkg = normalizePackage({
+            ...(existing ?? { id: LOCAL_SKILLS_ID, name: '本机 Skills', kind: 'skills-repo', repo: '', targets: [] }),
+            targets: [...new Set([...(existing?.targets ?? []), ...present])],
+            skills: {
+              include: [],
+              mode: 'symlink',
+              perHarness,
+              sources: { ...(existing?.skills.sources ?? {}), [name]: source },
+            },
+          }, existing ?? undefined);
+          if (index >= 0) manifest.packages[index] = pkg;
+          else manifest.packages.push(pkg);
+          const prevLock = lock.packages[pkg.id] ?? { harnesses: {} };
+          const harnesses = { ...(prevLock.harnesses ?? {}) };
+          for (const h of present) {
+            const prev = harnesses[h] ?? {};
+            harnesses[h] = {
+              ...prev,
+              status: 'installed',
+              method: 'adapter',
+              managedPaths: [...new Set([...(prev.managedPaths ?? []), entry.harnesses[h].path])],
+              installedAt: prev.installedAt || now,
+              lastError: '',
+            };
+          }
+          lock.packages[pkg.id] = { ...prevLock, harnesses };
+          await this.store.writeManifest(manifest);
+          await this.store.writeLock(lock);
+          return { message: `已纳管 Skill「${name}」，未改动本机文件`, state: await this.state() };
+        }
+
+        if (area === 'plugin') {
+          const entry = local.unmanaged.plugins.find(item => item.key === name)
+            ?? local.unmanaged.plugins.find(item => item.name === name);
+          if (!entry) throw new HttpError(404, `本机没有未纳管的插件「${name}」`);
+          const present = HARNESS_IDS.filter(h => entry.harnesses[h]);
+          const repo = present.map(h => entry.harnesses[h].repo).find(Boolean) || '';
+          const pkg = normalizePackage({
+            id: uniquePackageId(manifest.packages, entry.name),
+            name: entry.name,
+            kind: 'plugin',
+            repo,
+            targets: present,
+            plugin: { name: entry.name, marketplace: entry.marketplace || entry.name, harnesses: [] },
+          });
+          manifest.packages.push(pkg);
+          lock.packages[pkg.id] = {
+            harnesses: Object.fromEntries(present.map(h => [h, {
+              status: 'installed', method: 'adapter', installedVersion: entry.harnesses[h].version || '', installedAt: now, lastError: '',
+            }])),
+          };
+          await this.store.writeManifest(manifest);
+          await this.store.writeLock(lock);
+          return { message: `已纳管插件「${entry.name}」，未改动本机配置`, state: await this.state() };
+        }
+
+        throw new HttpError(400, `不支持纳管的类型：${area}`);
       }
 
       case 'local.scan': {

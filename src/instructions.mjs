@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { HARNESS_IDS, HARNESS_META } from './constants.mjs';
-import { composeInstructionContent, normalizeLineEndings } from './shared.mjs';
+import { composeSnippets, normalizeLineEndings } from './shared.mjs';
 import { isPlainObject, writeFileAtomic } from './store.mjs';
 
 function sha256(text) {
@@ -33,6 +33,23 @@ function normalizeConfig(input) {
     updatedAt: typeof input?.updatedAt === 'string' ? input.updatedAt : null,
     harnesses,
   };
+}
+
+// 规则片段：{ id, title, content, harnesses }，各端文件 = 该端开启的片段按顺序拼接
+export function normalizeSnippets(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : []).filter(isPlainObject).map((snippet, index) => {
+    const baseId = String(snippet.id ?? '').trim().replace(/[^\w.-]/g, '') || `snippet-${index + 1}`;
+    let id = baseId;
+    for (let n = 2; seen.has(id); n++) id = `${baseId}-${n}`;
+    seen.add(id);
+    return {
+      id,
+      title: String(snippet.title ?? '').trim() || `片段 ${index + 1}`,
+      content: normalizeLineEndings(String(snippet.content ?? '')),
+      harnesses: HARNESS_IDS.filter(h => Array.isArray(snippet.harnesses) && snippet.harnesses.includes(h)),
+    };
+  });
 }
 
 async function readTextIfExists(filePath) {
@@ -119,6 +136,7 @@ export class InstructionsStore {
     this.dir = join(rootDir, 'instructions');
     this.sharedFile = join(this.dir, 'shared.md');
     this.privateDir = join(this.dir, 'private');
+    this.snippetsFile = join(this.dir, 'snippets.json');
   }
 
   privateFileFor(harnessId) {
@@ -175,52 +193,44 @@ export class InstructionsStore {
     };
   }
 
-  async saveAll({ shared, harnesses }) {
-    const current = await this.readAll();
-    const nextShared = typeof shared === 'string' ? normalizeLineEndings(shared) : current.shared;
-    const nextConfig = normalizeConfig(current.config);
-    const nextPrivate = { ...current.privateByHarness };
-
-    if (isPlainObject(harnesses)) {
+  // 还没有 snippets.json 时由旧的「公共 + 各端私有」迁移：公共内容为全端片段，私有内容为单端片段，
+  // 拼接结果与迁移前逐字节一致；旧文件保留不删，首次保存时才写出 snippets.json
+  async readSnippets() {
+    let raw;
+    try {
+      raw = await readFile(this.snippetsFile, 'utf8');
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const { shared, privateByHarness } = await this.readAll();
+      const snippets = [];
+      if (shared.trim()) snippets.push({ id: 'shared', title: '公共内容', content: shared, harnesses: [...HARNESS_IDS] });
       for (const harnessId of HARNESS_IDS) {
-        const entry = harnesses[harnessId];
-        if (!isPlainObject(entry)) continue;
-        if (typeof entry.enabled === 'boolean') {
-          nextConfig.harnesses[harnessId].enabled = entry.enabled;
-        }
-        if (typeof entry.privateContent === 'string') {
-          nextPrivate[harnessId] = normalizeLineEndings(entry.privateContent);
+        if (privateByHarness[harnessId].trim()) {
+          snippets.push({
+            id: `private-${harnessId}`,
+            title: `${HARNESS_META[harnessId].label} 私有`,
+            content: privateByHarness[harnessId],
+            harnesses: [harnessId],
+          });
         }
       }
+      return { snippets, migrated: true };
     }
-
-    await writeFileAtomic(this.sharedFile, nextShared);
-    for (const harnessId of HARNESS_IDS) {
-      await writeFileAtomic(this.privateFileFor(harnessId), nextPrivate[harnessId]);
+    try {
+      const data = JSON.parse(raw);
+      if (!isPlainObject(data) || !Array.isArray(data.snippets)) throw new Error('缺少 snippets 数组');
+      return { snippets: normalizeSnippets(data.snippets), migrated: false };
+    } catch (error) {
+      throw new Error(`读取规则片段失败（${this.snippetsFile}）：${error.message}`);
     }
-    const writtenConfig = await this.writeConfig(nextConfig);
-    return {
-      config: writtenConfig,
-      shared: nextShared,
-      privateByHarness: nextPrivate,
-    };
   }
-}
 
-function resolveHarnessDraft(stored, draft) {
-  const shared = typeof draft?.shared === 'string' ? normalizeLineEndings(draft.shared) : stored.shared;
-  const harnesses = {};
-  for (const harnessId of HARNESS_IDS) {
-    const draftEntry = isPlainObject(draft?.harnesses?.[harnessId]) ? draft.harnesses[harnessId] : null;
-    harnesses[harnessId] = {
-      enabled: typeof draftEntry?.enabled === 'boolean' ? draftEntry.enabled : stored.config.harnesses[harnessId].enabled,
-      privateContent: typeof draftEntry?.privateContent === 'string'
-        ? normalizeLineEndings(draftEntry.privateContent)
-        : stored.privateByHarness[harnessId],
-      lastSyncedAt: stored.config.harnesses[harnessId].lastSyncedAt,
-    };
+  async writeSnippets(list) {
+    const snippets = normalizeSnippets(list);
+    await mkdir(this.dir, { recursive: true });
+    await writeFileAtomic(this.snippetsFile, JSON.stringify({ version: 2, updatedAt: new Date().toISOString(), snippets }, null, 2) + '\n');
+    return snippets;
   }
-  return { shared, harnesses };
 }
 
 function computeStatus({ enabled, hasSourceContent, fileInfo, composedContent }) {
@@ -234,53 +244,30 @@ function computeStatus({ enabled, hasSourceContent, fileInfo, composedContent })
 }
 
 export async function buildInstructionsState({ store, harnessPaths }) {
-  const stored = await store.readAll();
+  // 先读配置：instructions.json 损坏时直接报错，避免后续写入覆盖它
+  const config = await store.readConfig();
+  const { snippets, migrated } = await store.readSnippets();
   const harnesses = {};
-  const summary = {
-    enabled: 0,
-    synced: 0,
-    pending: 0,
-    symlink: 0,
-  };
+  const summary = { enabled: HARNESS_IDS.length, synced: 0, pending: 0, symlink: 0 };
 
   for (const harnessId of HARNESS_IDS) {
     const targetFile = harnessPaths[harnessId].instructionsFile;
-    const cfg = stored.config.harnesses[harnessId];
-    const privateContent = stored.privateByHarness[harnessId];
     const fileInfo = await inspectTargetInstructionFile(targetFile);
-    const hasSourceContent = Boolean(stored.shared.trim() || privateContent.trim());
-    const composedContent = hasSourceContent
-      ? composeInstructionContent({
-          shared: stored.shared,
-          privateContent,
-        })
-      : '';
-    const status = computeStatus({
-      enabled: cfg.enabled,
-      hasSourceContent,
-      fileInfo,
-      composedContent,
-    });
-
-    if (cfg.enabled) {
-      summary.enabled++;
-      if (status === 'synced') summary.synced++;
-      else if (status === 'symlink') {
-        summary.symlink++;
-        summary.pending++;
-      } else if (status === 'modified' || status === 'missing' || status === 'error') {
-        summary.pending++;
-      }
+    const composedContent = composeSnippets(snippets, harnessId);
+    const hasSourceContent = Boolean(composedContent);
+    const status = computeStatus({ enabled: true, hasSourceContent, fileInfo, composedContent });
+    if (status === 'synced') summary.synced++;
+    else if (status === 'symlink') {
+      summary.symlink++;
+      summary.pending++;
+    } else if (status === 'modified' || status === 'missing' || status === 'error') {
+      summary.pending++;
     }
-
     harnesses[harnessId] = {
       id: harnessId,
       label: HARNESS_META[harnessId].label,
       fileName: HARNESS_META[harnessId].instructionsFileName,
       targetFile,
-      privateFile: store.privateFileFor(harnessId),
-      enabled: cfg.enabled,
-      privateContent,
       exists: fileInfo.exists,
       isSymlink: fileInfo.isSymlink,
       symlinkTarget: fileInfo.symlinkTarget,
@@ -289,66 +276,42 @@ export async function buildInstructionsState({ store, harnessPaths }) {
       composedContent,
       hasSourceContent,
       status,
-      lastSyncedAt: cfg.lastSyncedAt,
+      lastSyncedAt: config.harnesses[harnessId].lastSyncedAt,
       readError: fileInfo.readError,
     };
   }
 
   return {
     dir: store.dir,
-    configFile: store.configFile,
-    sharedFile: store.sharedFile,
-    shared: stored.shared,
+    snippetsFile: store.snippetsFile,
+    migrated,
+    snippets,
     summary,
     harnesses,
   };
 }
 
-export async function syncInstructions({ store, harnessPaths, harnesses: requestedHarnesses, dryRun = false, draft = null }) {
-  const stored = await store.readAll();
-  const effective = resolveHarnessDraft(stored, draft);
-
-  const explicit = Array.isArray(requestedHarnesses) && requestedHarnesses.length > 0
+export async function syncInstructions({ store, harnessPaths, harnesses: requestedHarnesses, dryRun = false, snippets = null }) {
+  const config = await store.readConfig();
+  const list = snippets ? normalizeSnippets(snippets) : (await store.readSnippets()).snippets;
+  const targets = Array.isArray(requestedHarnesses) && requestedHarnesses.length > 0
     ? [...new Set(requestedHarnesses.filter(id => HARNESS_IDS.includes(id)))]
-    : null;
-  const targets = explicit ?? HARNESS_IDS.filter(id => effective.harnesses[id].enabled);
+    : [...HARNESS_IDS];
 
   const steps = [];
-  const nextConfig = normalizeConfig(stored.config);
+  const nextConfig = normalizeConfig(config);
   let configDirty = false;
-
-  if (targets.length === 0) {
-    steps.push({
-      harness: 'instructions',
-      action: 'sync',
-      status: 'skipped',
-      detail: '没有启用同步的目标 Harness',
-    });
-    return { steps };
-  }
 
   for (const harnessId of targets) {
     const targetFile = harnessPaths[harnessId].instructionsFile;
-    const entry = effective.harnesses[harnessId];
     const warnings = [];
-
-    if (!explicit && !entry.enabled) {
+    const composedContent = composeSnippets(list, harnessId);
+    if (!composedContent) {
       steps.push({
         harness: harnessId,
         action: 'sync',
         status: 'skipped',
-        detail: '该端未启用同步，已跳过',
-      });
-      continue;
-    }
-
-    const hasSourceContent = Boolean(effective.shared.trim() || entry.privateContent.trim());
-    if (!hasSourceContent) {
-      steps.push({
-        harness: harnessId,
-        action: 'sync',
-        status: 'skipped',
-        detail: '公共与私有内容均为空，已跳过写入以防误清空现有文件',
+        detail: '该端没有开启的规则片段，已跳过写入以防误清空现有文件',
       });
       continue;
     }
@@ -363,11 +326,6 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
       });
       continue;
     }
-
-    const composedContent = composeInstructionContent({
-      shared: effective.shared,
-      privateContent: entry.privateContent,
-    });
 
     if (fileInfo.isSymlink) {
       warnings.push(
@@ -387,19 +345,13 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
       continue;
     }
 
-    const lineCount = composedContent ? composedContent.trimEnd().split('\n').length : 0;
+    const lineCount = composedContent.trimEnd().split('\n').length;
     const prevLineCount = fileInfo.rawContent ? fileInfo.rawContent.trimEnd().split('\n').length : 0;
-    const actionVerb = fileInfo.isSymlink
-      ? '解除软链并写入独立文件'
-      : fileInfo.exists
-        ? '更新文件'
-        : '新建文件';
+    const actionVerb = fileInfo.isSymlink ? '解除软链并写入独立文件' : fileInfo.exists ? '更新文件' : '新建文件';
+    const parts = list.filter(item => item.harnesses.includes(harnessId) && item.content.trim()).map(item => item.title);
     const summaryLines = [
       `目标路径：${targetFile}`,
-      `内容组成：${[
-        effective.shared.trim() ? '公共内容' : '',
-        entry.privateContent.trim() ? '该端私有内容' : '',
-      ].filter(Boolean).join(' + ')}`,
+      `内容组成：${parts.join(' + ')}`,
       `行数变化：${prevLineCount} 行 → ${lineCount} 行（${Buffer.byteLength(composedContent, 'utf8')} 字节）`,
     ];
 
@@ -420,6 +372,7 @@ export async function syncInstructions({ store, harnessPaths, harnesses: request
       await writeFileAtomic(targetFile, composedContent);
       nextConfig.harnesses[harnessId] = {
         ...nextConfig.harnesses[harnessId],
+        enabled: true,
         lastSyncedAt: new Date().toISOString(),
         lastSyncedHash: sha256(composedContent),
       };

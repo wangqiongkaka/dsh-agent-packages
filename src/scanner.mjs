@@ -138,9 +138,28 @@ export async function readInstalledPlugins(harnessPaths) {
   return result;
 }
 
+// Codex 自带市场里的插件随 Codex 安装，不当作「未纳管」
+export const BUILTIN_PLUGIN_MARKETPLACES = ['openai-bundled', 'openai-primary-runtime'];
+
+// 插件 / 安装器顺带写入各端的 Skill：名称等于包 ID 或插件名，或以它们加短横线开头
+// shortcut: 按名称前缀推断归属，包自带的 Skill 名称不合此规律时会被列为未纳管，届时改为读取包的产物清单
+function ownerOfSkill(packages, harnessId, skillName) {
+  for (const pkg of packages) {
+    if (pkg.kind !== 'plugin' && pkg.kind !== 'installer') continue;
+    if (!pkg.targets.includes(harnessId)) continue;
+    for (const prefix of new Set([pkg.id, pkg.plugin?.name].filter(Boolean))) {
+      if (skillName === prefix || skillName.startsWith(`${prefix}-`)) return pkg.id;
+    }
+  }
+  return null;
+}
+
 export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
   const managedSkillPaths = new Map();
   const managedMcpKeys = new Map();
+  // 由插件 / 安装器带来的条目：显示「由 X 管理」，不提供纳管
+  const ownedMcpKeys = new Map();
+  const ownedPlugins = new Map();
   for (const pkg of manifest.packages) {
     const lockEntry = lock.packages[pkg.id];
     for (const harnessId of HARNESS_IDS) {
@@ -154,6 +173,13 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       if (pkg.kind === 'mcp' && pkg.targets.includes(harnessId)) {
         const key = `${harnessId}:${pkg.mcp?.serverName || pkg.id}`;
         if (!managedMcpKeys.has(key)) managedMcpKeys.set(key, pkg.id);
+      }
+      if ((pkg.kind === 'installer' || pkg.kind === 'plugin') && pkg.targets.includes(harnessId)) {
+        ownedMcpKeys.set(`${harnessId}:${pkg.mcp?.serverName || pkg.id}`, pkg.id);
+        if (pkg.kind === 'installer' && pkg.plugin?.name) {
+          const marketplace = harnessId === 'antigravity' ? '' : pkg.plugin.marketplace;
+          ownedPlugins.set(`${harnessId}:${pkg.plugin.name}@${marketplace}`, pkg.id);
+        }
       }
     }
   }
@@ -177,12 +203,13 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
     const skills = await scanSkillsDirectory(paths.skillsDir);
     const enrichedSkills = skills.map(item => {
       const managedBy = managedSkillPaths.get(item.path) || null;
+      const ownedBy = managedBy ? null : ownerOfSkill(manifest.packages, harnessId, item.name);
       const lockMeta = agentsSkillLock[item.name];
       const sourceRepo = lockMeta?.source ? normalizeRepoUrl(lockMeta.source) : '';
       if (item.broken) {
-        warnings.push({ harness: harnessId, kind: 'broken-symlink', message: `失效软链接：${item.path} -> ${item.linkTarget}` });
+        warnings.push({ harness: harnessId, area: 'skills', kind: 'broken-symlink', message: `失效软链接：${item.path} -> ${item.linkTarget}` });
       }
-      return { ...item, managedBy, sourceRepo };
+      return { ...item, managedBy, ownedBy, sourceRepo };
     });
 
     let mcpServers = {};
@@ -194,13 +221,15 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
           : await readJsonMcpServers(paths.mcpFile);
       } catch (error) {
         mcpError = error.message;
-        warnings.push({ harness: harnessId, kind: 'config-error', message: error.message });
+        warnings.push({ harness: harnessId, area: 'mcp', kind: 'config-error', message: error.message });
       }
     }
 
     const mcpList = Object.entries(mcpServers).map(([serverName, cfg]) => {
       const managedBy = managedMcpKeys.get(`${harnessId}:${serverName}`) || null;
+      const ownedBy = managedBy ? null : (ownedMcpKeys.get(`${harnessId}:${serverName}`) || null);
       return {
+        ownedBy,
         serverName,
         transport: cfg?.url ? 'http' : 'stdio',
         command: cfg?.command || '',
@@ -216,16 +245,18 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       if (hLock?.status !== 'installed') continue;
       for (const p of hLock.managedPaths ?? []) {
         try { await lstat(p); }
-        catch { warnings.push({ harness: harnessId, kind: 'drift', message: `包 ${pkg.id} 的受管 Skill 缺失：${p}` }); }
+        catch { warnings.push({ harness: harnessId, area: 'skills', kind: 'drift', message: `包 ${pkg.id} 的受管 Skill 缺失：${p}` }); }
       }
       if (hLock.managedServerKey && paths.mcpFile && !(hLock.managedServerKey in mcpServers)) {
-        warnings.push({ harness: harnessId, kind: 'drift', message: `包 ${pkg.id} 的受管 MCP（${hLock.managedServerKey}）在 ${paths.mcpFile} 中已丢失` });
+        warnings.push({ harness: harnessId, area: 'mcp', kind: 'drift', message: `包 ${pkg.id} 的受管 MCP（${hLock.managedServerKey}）在 ${paths.mcpFile} 中已丢失` });
       }
     }
 
     const pluginList = (installedPlugins[harnessId]?.plugins ?? []).map(plugin => {
-      const managedBy = managedPlugins.get(`${harnessId}:${plugin.name}@${plugin.marketplace}`) || null;
-      return { ...plugin, managedBy };
+      const key = `${harnessId}:${plugin.name}@${plugin.marketplace}`;
+      const managedBy = managedPlugins.get(key) || null;
+      const ownedBy = managedBy ? null : (ownedPlugins.get(key) || null);
+      return { ...plugin, managedBy, ownedBy, builtin: BUILTIN_PLUGIN_MARKETPLACES.includes(plugin.marketplace) };
     }).sort((a, b) => a.name.localeCompare(b.name));
 
     harnesses[harnessId] = {
@@ -248,6 +279,7 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
     if (legacySkills.length > 0) {
       warnings.push({
         harness: 'antigravity',
+        area: 'skills',
         kind: 'legacy-dir',
         message: `检测到旧版目录 ${harnessPaths.antigravity.legacySkillsDir} 仍有 ${legacySkills.length} 个 Skills（新版 Antigravity 实际读取 ${harnessPaths.antigravity.skillsDir}）`,
       });
@@ -260,6 +292,7 @@ export async function scanLocalEnvironment({ harnessPaths, manifest, lock }) {
       if (legacyKeys.length > 0) {
         warnings.push({
           harness: 'antigravity',
+          area: 'mcp',
           kind: 'legacy-config',
           message: `检测到旧版配置 ${harnessPaths.antigravity.legacyMcpFile} 残留 MCP：${legacyKeys.join(', ')}（新版读取 ${harnessPaths.antigravity.mcpFile}）`,
         });
