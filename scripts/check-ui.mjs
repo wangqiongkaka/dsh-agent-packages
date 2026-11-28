@@ -86,6 +86,13 @@ try {
     'command = "codegraph"',
     'args = ["serve", "--mcp"]',
     '',
+    '[mcp_servers.hindsight]',
+    'command = "node"',
+    'args = ["mcp-server.js"]',
+    '',
+    '[mcp_servers.hindsight.env]',
+    'HINDSIGHT_MCP_HARNESS = "codex"',
+    '',
     '[marketplaces.openai-bundled]',
     'source_type = "local"',
     `source = "${join(codexDir, 'bundled')}"`,
@@ -96,7 +103,10 @@ try {
   ].join('\n'));
   await writeFile(join(homeDir, '.claude.json'), JSON.stringify({
     theme: 'dark',
-    mcpServers: { playwright: { type: 'stdio', command: 'npx', args: ['@playwright/mcp@latest'], env: { TOKEN: '${TOKEN}' }, alwaysLoad: true } },
+    mcpServers: {
+      playwright: { type: 'stdio', command: 'npx', args: ['@playwright/mcp@latest'], env: { TOKEN: '${TOKEN}' }, alwaysLoad: true },
+      hindsight: { type: 'stdio', command: 'node', args: ['mcp-server.js'], env: { HINDSIGHT_MCP_HARNESS: 'claude-code' } },
+    },
   }, null, 2) + '\n');
 
   // —— 插件：Claude 已添加市场 tools（本地目录含 tidy 与 lint 两个插件），已装 tidy
@@ -202,6 +212,8 @@ try {
   await row('notes').locator('.ap-confirm p').getByText(/将删除 Codex 的软链/).waitFor();
   await page.getByRole('button', { name: '确认删除' }).click();
   await notice(/已删除 Codex 的软链/);
+  // 成功提示 3 秒后自动消失
+  await page.locator('.ap-banner-notice').waitFor({ state: 'detached', timeout: 5000 });
   assert.equal(await exists(join(codexDir, 'skills', 'notes')), false);
   // 展开 4 端一致组
   await page.locator('.ap-matrix-group', { hasText: '4 端一致' }).getByRole('button', { name: '展开' }).click();
@@ -263,6 +275,25 @@ try {
   await row('codegraph').locator('.ap-confirm p').getByText(/将从 Codex 的 MCP 配置移除「codegraph」/).waitFor();
   await page.locator('.ap-confirm').screenshot({ path: 'artifacts/packages-confirm.png' });
   await row('codegraph').locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
+  // 按端不同的变量：只是值不同不算不一致；编辑时按端填入、全部勾选；新端单独填值，已有端保持各自的值
+  assert.doesNotMatch(await row('hindsight').innerText(), /各端配置不同/);
+  await page.getByRole('button', { name: '编辑 hindsight' }).click();
+  const hsVal = h => page.getByRole('textbox', { name: `HINDSIGHT_MCP_HARNESS 在 ${h} 的值` });
+  assert.equal(await hsVal('Codex').inputValue(), 'codex');
+  assert.equal(await hsVal('Claude Code').inputValue(), 'claude-code');
+  await page.locator('.ap-editor .ap-check-item', { hasText: 'Antigravity' }).locator('input').check();
+  await hsVal('Antigravity').fill('antigravity');
+  await page.screenshot({ path: 'artifacts/packages-mcp-env-split.png', fullPage: true });
+  await page.setViewportSize({ width: 585, height: 1000 });
+  await page.screenshot({ path: 'artifacts/packages-mcp-env-split-panel.png', fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 1000 });
+  await page.getByRole('button', { name: /^保存并写入/ }).click();
+  await notice(/已把「hindsight」写入/);
+  assert.equal((await readCodexMcpServers(join(codexDir, 'config.toml'))).hindsight.env.HINDSIGHT_MCP_HARNESS, 'codex');
+  assert.equal(JSON.parse(await readFile(join(homeDir, '.claude.json'), 'utf8')).mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS, 'claude-code');
+  assert.equal((await readJsonMcpServers(join(agyDir, 'mcp_config.json'))).hindsight.env.HINDSIGHT_MCP_HARNESS, 'antigravity');
+  await sw(row('codegraph'), 'Codex').click();
+  await row('codegraph').locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
   await page.screenshot({ path: 'artifacts/packages-mcp.png', fullPage: true });
 
   // 3. 插件：未添加市场的端置灰；先在市场行开启 Codex，再安装；Antigravity 用本地目录
@@ -323,6 +354,9 @@ try {
   await page.setViewportSize({ width: 585, height: 1000 });
   await page.screenshot({ path: 'artifacts/packages-market-fail-panel.png', fullPage: true });
   await page.setViewportSize({ width: 1360, height: 1000 });
+  // 部分失败的警示提示不自动消失
+  await page.waitForTimeout(3500);
+  assert.equal(await page.locator('.ap-banner-notice.is-warn').count(), 1, '警示提示应保留到手动关闭');
   failCodexMarketplace = false;
   await page.locator('.ap-editor').getByRole('button', { name: '重试 1 端' }).click();
   await notice(/已添加市场 acme\/extras/);

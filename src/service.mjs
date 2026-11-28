@@ -200,8 +200,9 @@ export class PackageManagerService {
         const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
         if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，请在「插件」视图把插件安装到其他端`);
         try {
-          const { detail } = await toggleMcp({ harnessPaths: await currentPaths(), key: input.key, harness, on: Boolean(input.on) });
-          return done(detail, [{ harness, status: 'ok', detail }]);
+          const { detail, warn = false } = await toggleMcp({ harnessPaths: await currentPaths(), key: input.key, harness, on: Boolean(input.on) });
+          // warn：写入成功但需要人去核对（如按端不同的变量被照常复制），提示条用警示色且不自动消失
+          return { ...await done(detail, [{ harness, status: 'ok', detail }]), warn };
         } catch (error) {
           return done(`「${input.key}」在 ${label(harness)} 未变更：${error.message}`, [{ harness, status: 'error', detail: error.message }], false);
         }
@@ -211,7 +212,7 @@ export class PackageManagerService {
         const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
         if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，不能在这里编辑`);
         try {
-          const { steps } = await saveMcp({ harnessPaths: await currentPaths(), key: input.key, spec: input.spec, harnesses: input.harnesses });
+          const { steps } = await saveMcp({ harnessPaths: await currentPaths(), key: input.key, spec: input.spec, specs: input.specs, harnesses: input.harnesses });
           return done(`已把「${input.key}」写入 ${steps.map(step => label(step.harness)).join('、')}`, steps);
         } catch (error) {
           throw new HttpError(400, error.message);

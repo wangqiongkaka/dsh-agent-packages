@@ -122,6 +122,23 @@ test('MCP：跨格式翻译写入、关闭移除、手工保存保留各端未�
   await assert.rejects(() => service.action({ type: 'mcp.save', key: 'x', harnesses: ['dsh'], spec: { command: 'x' } }), /至少选择一个可写入 MCP 的端/);
   await assert.rejects(() => service.action({ type: 'mcp.save', key: 'bad key', harnesses: ['codex'], spec: { command: 'x' } }), /MCP key/);
 
+  // 按端不同的变量：同一 key 在各端写入各自的值；只是变量值不同仍算一致；点亮新端时提示去核对
+  const base = { transport: 'stdio', command: 'node', args: ['mcp-server.js'] };
+  await service.action({
+    type: 'mcp.save',
+    key: 'hindsight',
+    harnesses: ['codex', 'claude-code'],
+    spec: { ...base, env: { HINDSIGHT_MCP_HARNESS: 'codex' } },
+    specs: { 'claude-code': { ...base, env: { HINDSIGHT_MCP_HARNESS: 'claude-code' } } },
+  });
+  assert.equal((await readCodexMcpServers(codexFile)).hindsight.env.HINDSIGHT_MCP_HARNESS, 'codex');
+  assert.equal(JSON.parse(await readFile(claudeFile, 'utf8')).mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS, 'claude-code');
+  assert.equal((await service.state()).mcp.rows.find(r => r.key === 'hindsight').consistent, true, '只是变量值不同算一致');
+  const agyOn = await service.action({ type: 'mcp.toggle', key: 'hindsight', harness: 'antigravity', on: true });
+  assert.match(agyOn.message, /HINDSIGHT_MCP_HARNESS 各端取值不同，已按 Codex 的值写入，请编辑核对/);
+  assert.equal(agyOn.ok, true);
+  assert.equal(agyOn.warn, true, '需要核对的提示用警示色');
+
   const off = await service.action({ type: 'mcp.toggle', key: 'Chrome-DevTools', harness: 'codex', on: false });
   assert.equal(off.ok, true);
   assert.equal((await readCodexMcpServers(codexFile))['Chrome-DevTools'], undefined);

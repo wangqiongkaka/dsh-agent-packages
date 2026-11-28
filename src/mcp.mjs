@@ -41,9 +41,10 @@ export function specFromRaw(raw = {}) {
   };
 }
 
+// 一致性只比较变量名，不比较变量值：同一个变量按端取不同的值（如 HINDSIGHT_MCP_HARNESS）是有意为之
 const specKey = spec => JSON.stringify({
   ...spec,
-  env: Object.fromEntries(Object.entries(spec.env).sort()),
+  env: Object.keys(spec.env).sort(),
   headers: Object.fromEntries(Object.entries(spec.headers).sort()),
 });
 
@@ -87,7 +88,10 @@ export async function toggleMcp({ harnessPaths, key, harness, on }) {
     if (row.harnesses[harness]) return { detail: `${label} 已有「${key}」，无需操作` };
     const source = Object.entries(row.harnesses)[0];
     const result = await writeServer(target, key, render(harness, source[1].spec, null));
-    return { detail: `已把「${key}」从 ${HARNESS_META[source[0]].label} 写入 ${target.mcpFile}（${result.action === 'add' ? '新增' : '更新'}）` };
+    // 各端取值不同的变量无法推断新端该填什么，照常复制并提示去核对
+    const differing = Object.keys(source[1].spec.env).filter(k => new Set(Object.values(row.harnesses).map(item => item.spec.env[k])).size > 1);
+    const hint = differing.length ? `；${differing.join('、')} 各端取值不同，已按 ${HARNESS_META[source[0]].label} 的值写入，请编辑核对` : '';
+    return { detail: `已把「${key}」从 ${HARNESS_META[source[0]].label} 写入 ${target.mcpFile}（${result.action === 'add' ? '新增' : '更新'}）${hint}`, warn: Boolean(hint) };
   }
   if (!row.harnesses[harness]) return { detail: `${label} 没有「${key}」，无需操作` };
   if (target.mcpFormat === 'toml') await removeCodexMcpServer(target.mcpFile, key);
@@ -95,12 +99,8 @@ export async function toggleMcp({ harnessPaths, key, harness, on }) {
   return { detail: `已从 ${target.mcpFile} 移除「${key}」` };
 }
 
-// 手工添加 / 编辑：写入所选端，保留各端原有的未建模字段；未选的端不动
-export async function saveMcp({ harnessPaths, key, spec, harnesses }) {
-  if (!MCP_KEY_RE.test(String(key ?? ''))) throw new Error('MCP key 只能包含字母、数字、点、下划线、@ 和短横线，且以字母或数字开头');
-  const targets = (harnesses ?? []).filter(h => harnessPaths[h]?.mcpFile);
-  if (!targets.length) throw new Error('至少选择一个可写入 MCP 的端');
-  const normalized = {
+function normalizeSpec(spec) {
+  return {
     transport: spec?.transport === 'http' ? 'http' : 'stdio',
     command: String(spec?.command ?? '').trim(),
     args: Array.isArray(spec?.args) ? spec.args.map(String).filter(arg => arg !== '') : [],
@@ -109,10 +109,19 @@ export async function saveMcp({ harnessPaths, key, spec, harnesses }) {
     envRefs: (spec?.envRefs ?? []).map(String).filter(Boolean),
     headers: spec?.headers ?? {},
   };
+}
+
+// 手工添加 / 编辑：写入所选端，保留各端原有的未建模字段；未选的端不动。
+// specs（可选）按端给出各自的定义，用于同一变量在各端取不同的值；没给的端用 spec
+export async function saveMcp({ harnessPaths, key, spec, specs = {}, harnesses }) {
+  if (!MCP_KEY_RE.test(String(key ?? ''))) throw new Error('MCP key 只能包含字母、数字、点、下划线、@ 和短横线，且以字母或数字开头');
+  const targets = (harnesses ?? []).filter(h => harnessPaths[h]?.mcpFile);
+  if (!targets.length) throw new Error('至少选择一个可写入 MCP 的端');
   const { rows } = await listMcp(harnessPaths);
   const row = rows.find(item => item.key === key);
   const steps = [];
   for (const harnessId of targets) {
+    const normalized = normalizeSpec(specs?.[harnessId] ?? spec);
     const result = await writeServer(harnessPaths[harnessId], key, render(harnessId, normalized, row?.harnesses[harnessId]?.raw));
     steps.push({
       harness: harnessId,

@@ -14,7 +14,8 @@ function specSummary(spec) {
   return spec.transport === 'http' ? spec.url : [spec.command, ...spec.args].join(' ');
 }
 
-const specText = spec => JSON.stringify(spec ?? null);
+// 与服务端一致性判断同口径：比较变量名，不比较变量值
+const specShape = spec => (spec ? JSON.stringify({ ...spec, env: Object.keys(spec.env).sort() }) : 'null');
 
 // 分组：插件带来的单独成组；其余按是否需要处理（只在部分可写端、或各端配置不同）
 export function mcpGroups(state, rows = state.mcp.rows) {
@@ -25,11 +26,17 @@ export function mcpGroups(state, rows = state.mcp.rows) {
   return { attn, owned, settled: free.filter(row => !attn.includes(row)), writable };
 }
 
+// 某变量在某端的值：具体值、''（引用宿主机变量）或 undefined（该端没有这个变量）
+const envValue = (spec, key) => (key in spec.env ? spec.env[key] : spec.envRefs.includes(key) ? '' : undefined);
+
+// 编辑时：各端取值不同的变量自动切到「按端不同」并填入各端现有的值
 function draftFromSpec(key, spec, harnesses, { baseHarness = '', inconsistent = false, row = null } = {}) {
-  const envRows = [
-    ...Object.entries(spec?.env ?? {}).map(([k, v]) => ({ key: k, value: v })),
-    ...(spec?.envRefs ?? []).map(k => ({ key: k, value: '' })),
-  ];
+  const present = row ? HARNESS_IDS.filter(h => row.harnesses[h]) : [];
+  const envRows = [...Object.keys(spec?.env ?? {}), ...(spec?.envRefs ?? [])].map(k => {
+    const perHarness = Object.fromEntries(present.map(h => [h, envValue(row.harnesses[h].spec, k) ?? '']));
+    const value = envValue(spec, k);
+    return new Set(Object.values(perHarness)).size > 1 ? { key: k, value, perHarness } : { key: k, value };
+  });
   return {
     key,
     transport: spec?.transport || 'stdio',
@@ -44,14 +51,16 @@ function draftFromSpec(key, spec, harnesses, { baseHarness = '', inconsistent = 
   };
 }
 
-function specFromDraft(draft) {
+// harnessId 给出时按该端解析「按端不同」的变量；新勾选、还没填的端沿用共用值
+function specFromDraft(draft, harnessId) {
   const env = {};
   const envRefs = [];
   for (const item of draft.envRows) {
     const k = item.key.trim();
     if (!k) continue;
-    if (item.value === '') envRefs.push(k);
-    else env[k] = item.value;
+    const value = item.perHarness ? (item.perHarness[harnessId] ?? item.value) : item.value;
+    if (value === '') envRefs.push(k);
+    else env[k] = value;
   }
   return { transport: draft.transport, command: draft.command, args: draft.argsText.split(/\s+/).filter(Boolean), url: draft.url, env, envRefs };
 }
@@ -79,7 +88,8 @@ function targetNote(draft, harnessId) {
   const entry = row.harnesses[harnessId];
   if (!entry) return '未配置 · 将新增';
   if (harnessId === draft.baseHarness) return '底稿所在端 · 已配置';
-  return specText(entry.spec) === specText(row.harnesses[draft.baseHarness]?.spec) ? '已配置' : '配置不同 · 勾选会覆盖为此配置';
+  // 只是变量值不同不算配置不同：按端不同的变量会各自保留
+  return specShape(entry.spec) === specShape(row.harnesses[draft.baseHarness]?.spec) ? '已配置' : '配置不同 · 勾选会覆盖为此配置';
 }
 
 function McpForm({ ctx, initial, editing, onClose }) {
@@ -87,14 +97,19 @@ function McpForm({ ctx, initial, editing, onClose }) {
   const [draft, setDraft] = useState(initial);
   const set = patch => setDraft(prev => ({ ...prev, ...patch }));
   const setEnv = (index, patch) => set({ envRows: draft.envRows.map((row, i) => (i === index ? { ...row, ...patch } : row)) });
-  const spec = specFromDraft(draft);
-  const save = () => run({ type: 'mcp.save', key: draft.key.trim(), harnesses: draft.harnesses, spec }, 'mcp.save', onClose);
+  // 切到「按端不同」时各端先填入共用值；切回时取第一个端的值作为共用值
+  const toggleSplit = (index, row) => setEnv(index, row.perHarness
+    ? { perHarness: undefined, value: row.perHarness[draft.harnesses[0]] ?? row.value }
+    : { perHarness: Object.fromEntries(draft.harnesses.map(h => [h, row.value ?? ''])) });
+  const spec = specFromDraft(draft, draft.harnesses[0]);
+  const specs = Object.fromEntries(draft.harnesses.map(h => [h, specFromDraft(draft, h)]));
+  const save = () => run({ type: 'mcp.save', key: draft.key.trim(), harnesses: draft.harnesses, spec, specs }, 'mcp.save', onClose);
   const canSave = draft.key.trim() && draft.harnesses.length && (draft.transport === 'http' ? draft.url.trim() : draft.command.trim());
   const key = draft.key.trim() || '<key>';
   const previews = draft.harnesses.map(h => {
     const meta = state.harnesses.find(item => item.id === h);
     try {
-      return { h, file: meta.mcpFile, text: previewText(h, key, renderMcpForHarness(h, spec, draft.row?.harnesses[h]?.extras)) };
+      return { h, file: meta.mcpFile, text: previewText(h, key, renderMcpForHarness(h, specs[h], draft.row?.harnesses[h]?.extras)) };
     } catch (cause) {
       return { h, file: meta.mcpFile, error: draft.transport === 'http' ? '填写地址后显示' : '填写命令后显示' };
     }
@@ -151,16 +166,41 @@ function McpForm({ ctx, initial, editing, onClose }) {
               </div>
               <div className="ap-kv-list">
                 {draft.envRows.map((row, index) => (
-                  <div key={index} className="ap-kv-row">
+                  <div key={index} className={`ap-kv-row ${row.perHarness ? 'is-split' : ''}`.trim()}>
                     <label htmlFor={`ap-mcp-env-key-${index}`} className="ap-sr-only">变量名 {index + 1}</label>
                     <input id={`ap-mcp-env-key-${index}`} className="ap-input ap-kv-key" placeholder="变量名" value={row.key} onChange={e => setEnv(index, { key: e.target.value })} />
-                    <label htmlFor={`ap-mcp-env-val-${index}`} className="ap-sr-only">变量值 {index + 1}</label>
-                    <input id={`ap-mcp-env-val-${index}`} className="ap-input ap-kv-val" placeholder="值（留空则引用宿主机变量）" value={row.value} onChange={e => setEnv(index, { value: e.target.value })} />
-                    <IconButton icon="trash" label={`删除第 ${index + 1} 行环境变量`} className="is-danger" onClick={() => set({ envRows: draft.envRows.filter((_, i) => i !== index) })} />
+                    {row.perHarness ? (
+                      <div className="ap-kv-split" role="group" aria-label={`${row.key || `第 ${index + 1} 行变量`} 各端的值`}>
+                        {draft.harnesses.map(h => (
+                          <label key={h} className="ap-kv-sub">
+                            <span>{harnessLabel(h)}</span>
+                            <input
+                              className="ap-input ap-kv-val"
+                              aria-label={`${row.key || `第 ${index + 1} 行变量`} 在 ${harnessLabel(h)} 的值`}
+                              placeholder="留空则引用宿主机变量"
+                              value={row.perHarness[h] ?? row.value ?? ''}
+                              onChange={e => setEnv(index, { perHarness: { ...row.perHarness, [h]: e.target.value } })}
+                            />
+                          </label>
+                        ))}
+                        {!draft.harnesses.length && <p className="ap-help">先在下方勾选要写入的端</p>}
+                      </div>
+                    ) : (
+                      <>
+                        <label htmlFor={`ap-mcp-env-val-${index}`} className="ap-sr-only">变量值 {index + 1}</label>
+                        <input id={`ap-mcp-env-val-${index}`} className="ap-input ap-kv-val" placeholder="值（留空则引用宿主机变量）" value={row.value ?? ''} onChange={e => setEnv(index, { value: e.target.value })} />
+                      </>
+                    )}
+                    <div className="ap-kv-acts">
+                      <button type="button" className="ap-link-btn" aria-pressed={Boolean(row.perHarness)} onClick={() => toggleSplit(index, row)}>
+                        {row.perHarness ? '各端相同' : '按端不同'}
+                      </button>
+                      <IconButton icon="trash" label={`删除第 ${index + 1} 行环境变量`} className="is-danger" onClick={() => set({ envRows: draft.envRows.filter((_, i) => i !== index) })} />
+                    </div>
                   </div>
                 ))}
               </div>
-              <p className="ap-help">值留空表示引用本机同名环境变量；写入 Codex 时转为 env_vars。</p>
+              <p className="ap-help">值留空表示引用本机同名环境变量；写入 Codex 时转为 env_vars。「按端不同」时每个勾选的端分别填写，如 HINDSIGHT_MCP_HARNESS。</p>
             </div>
           )}
           <fieldset className="ap-field ap-fieldset">

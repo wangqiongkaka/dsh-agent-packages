@@ -101,6 +101,13 @@ export function PackagesPage() {
   const [catalogs, setCatalogs] = useState({});
   const [reloadTick, setReloadTick] = useState(0);
 
+  // 成功提示 3 秒后自动消失；失败或需要核对的警示提示保留到手动关闭
+  useEffect(() => {
+    if (!notice || noticeWarn) return undefined;
+    const timer = setTimeout(() => setNotice(''), 3000);
+    return () => clearTimeout(timer);
+  }, [notice, noticeWarn]);
+
   useEffect(() => {
     let active = true;
     void apiRequest()
@@ -139,7 +146,7 @@ export function PackagesPage() {
       if (result.state) setState(result.state);
       if (result.message) {
         setNotice(result.message);
-        setNoticeWarn(result.ok === false);
+        setNoticeWarn(result.ok === false || Boolean(result.warn));
       }
       setLog(prev => (result.steps?.length
         ? { id: (prev?.id ?? 0) + 1, tab: originTab, steps: result.steps }
