@@ -17,13 +17,11 @@ function specSummary(spec) {
 // 与服务端一致性判断同口径：比较变量名，不比较变量值
 const specShape = spec => (spec ? JSON.stringify({ ...spec, env: Object.keys(spec.env).sort() }) : 'null');
 
-// 分组：插件带来的单独成组；其余按是否需要处理（只在部分可写端、或各端配置不同）
+// 分组：只在部分可写端、或各端配置不同的排在前面
 export function mcpGroups(state, rows = state.mcp.rows) {
   const writable = state.harnesses.filter(h => h.supportsMcp).map(h => h.id);
-  const owned = rows.filter(row => row.providedBy?.length);
-  const free = rows.filter(row => !row.providedBy?.length);
-  const attn = free.filter(row => !row.consistent || writable.some(h => !row.harnesses[h]));
-  return { attn, owned, settled: free.filter(row => !attn.includes(row)), writable };
+  const attn = rows.filter(row => !row.consistent || writable.some(h => !row.harnesses[h]));
+  return { attn, settled: rows.filter(row => !attn.includes(row)), writable };
 }
 
 // 某变量在某端的值：具体值、''（引用宿主机变量）或 undefined（该端没有这个变量）
@@ -284,7 +282,7 @@ function McpDiff({ row, id }) {
           ))}
         </tbody>
       </table>
-      {present.length > 1 && <p className="ap-help">高亮的字段各端不同。开启新端时从 {harnessLabel(present[0])} 复制（第一个已有该 key 的端）。</p>}
+      {present.length > 1 && <p className="ap-help">高亮的字段各端不同。</p>}
     </div>
   );
 }
@@ -293,16 +291,15 @@ export function McpView({ ctx, form, setForm }) {
   const { state, busy, pendingKey, search, filter, run, ask, confirmFor, expanded, toggleExpanded } = ctx;
   const needle = search.trim().toLowerCase();
   const rows = state.mcp.rows.filter(row => !needle || row.key.toLowerCase().includes(needle));
-  const { attn, owned, settled, writable } = mcpGroups(state, rows);
+  const { attn, settled, writable } = mcpGroups(state, rows);
   const writableSet = new Set(writable);
   const errors = Object.entries(state.mcp.errors ?? {});
   const show = id => filter === 'all' || filter === id;
   const settledOpen = Boolean(expanded['mcp:settled']) || Boolean(needle) || filter === 'settled';
 
-  const toggle = (row, harness, on) => {
-    const key = `mcp:${row.key}:${harness}`;
-    const exec = () => run({ type: 'mcp.toggle', key: row.key, harness, on }, key);
-    if (on) return void exec();
+  // 格子只能删除：页面不做跨端同步，写入其他端用「编辑」
+  const remove = (row, harness) => {
+    const exec = () => run({ type: 'mcp.remove', key: row.key, harness }, `mcp:${row.key}:${harness}`);
     ask(`mcp:${row.key}`, `将从 ${harnessLabel(harness)} 的 MCP 配置移除「${row.key}」，其他条目不受影响。`, '确认移除', exec);
   };
 
@@ -321,33 +318,32 @@ export function McpView({ ctx, form, setForm }) {
     }
     const open = Boolean(expanded[`mcp:${row.key}`]);
     const first = Object.values(row.harnesses)[0]?.spec;
-    const ownedBy = row.providedBy?.length ? row.providedBy.join('、') : '';
     return (
       <article key={row.key} className="ap-matrix-row ap-pkg-card">
         <div className="ap-row-main">
           <div className="ap-pkg-title-row">
             <RowToggle open={open} title={row.key} controls={`ap-mcp-${row.key}`} mono onClick={() => toggleExpanded(`mcp:${row.key}`)} />
-            {ownedBy && <span className="ap-badge ap-badge-kind" title="由插件注册与清理，不能在这里单独同步或编辑">插件 {ownedBy}</span>}
             {!row.consistent && <span className="ap-badge ap-badge-kind" title="各端的命令、参数或环境变量不同">各端配置不同</span>}
           </div>
           <RowMeta indent>{`${first?.transport === 'http' ? 'HTTP' : 'Stdio'} · ${specSummary(first)}`}</RowMeta>
         </div>
         <ToggleCells
-          ariaLabel={`${row.key} 各端开关`}
+          ariaLabel={`${row.key} 各端情况`}
           disabled={busy}
           cells={HARNESS_IDS.map(h => ({
             harnessId: h,
             on: Boolean(row.harnesses[h]),
-            status: row.harnesses[h] ? 'installed' : 'unselected',
-            label: `${harnessLabel(h)}：${row.harnesses[h] ? specSummary(row.harnesses[h].spec) : '没有'}`,
-            disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，跟随插件安装，不能单独同步；${h === 'dsh' ? 'DSH 原生没有插件机制' : '需要在其他端使用请在该端手工安装插件'}`
-              : writableSet.has(h) ? '' : `${harnessLabel(h)} 没有可写入的 MCP 配置文件`,
+            status: row.harnesses[h] ? 'installed' : 'none',
+            label: `${harnessLabel(h)}：${row.harnesses[h] ? specSummary(row.harnesses[h].spec) : writableSet.has(h) ? `没有，要写入该端请用「编辑」` : '没有'}`,
+            hint: '点击移除',
+            inert: writableSet.has(h) && !row.harnesses[h],
+            disabledReason: writableSet.has(h) ? '' : `${harnessLabel(h)} 没有可写入的 MCP 配置文件`,
             busy: pendingKey === `mcp:${row.key}:${h}`,
-            onToggle: on => toggle(row, h, on),
+            onToggle: () => remove(row, h),
           }))}
         />
         <div className="ap-pkg-actions">
-          {!ownedBy && <IconButton icon="edit" label={`编辑 ${row.key}`} disabled={busy} onClick={() => openEdit(row)} />}
+          <IconButton icon="edit" label={`编辑 ${row.key}`} disabled={busy} onClick={() => openEdit(row)} />
         </div>
         {confirmFor(`mcp:${row.key}`)}
         {open && <McpDiff row={row} id={`ap-mcp-${row.key}`} />}
@@ -357,7 +353,6 @@ export function McpView({ ctx, form, setForm }) {
 
   const groups = [
     show('attn') && attn.length > 0 && { id: 'attn', title: '需处理', note: '只在部分端，或各端配置不同', rows: attn },
-    show('owned') && owned.length > 0 && { id: 'owned', title: '由插件提供', note: '随插件写入，不能单独同步；需要在其他端使用请在该端手工安装插件', rows: owned },
     show('settled') && settled.length > 0 && { id: 'settled', title: `${writable.length} 端一致`, note: '可写入的各端配置相同', rows: settled, collapsible: !needle && filter !== 'settled' },
   ].filter(Boolean);
 

@@ -75,25 +75,14 @@ async function writeServer(target, key, config) {
     : upsertJsonMcpServer(target.mcpFile, key, config);
 }
 
-// 开启：取其他端已有配置翻译成该端格式写入；关闭：从该端配置移除这个 key
-export async function toggleMcp({ harnessPaths, key, harness, on }) {
+// 从某端配置移除这个 key；页面不提供跨端同步，写入只走「添加 / 编辑」表单
+export async function removeMcp({ harnessPaths, key, harness }) {
   if (!MCP_KEY_RE.test(String(key ?? ''))) throw new Error(`MCP key 不合法：${key}`);
   const target = harnessPaths[harness];
   const label = HARNESS_META[harness]?.label ?? harness;
   if (!target?.mcpFile) throw new Error(`${label} 没有可写入的 MCP 配置文件`);
   const { rows } = await listMcp(harnessPaths);
-  const row = rows.find(item => item.key === key);
-  if (!row) throw new Error(`本机没有名为「${key}」的 MCP`);
-  if (on) {
-    if (row.harnesses[harness]) return { detail: `${label} 已有「${key}」，无需操作` };
-    const source = Object.entries(row.harnesses)[0];
-    const result = await writeServer(target, key, render(harness, source[1].spec, null));
-    // 各端取值不同的变量无法推断新端该填什么，照常复制并提示去核对
-    const differing = Object.keys(source[1].spec.env).filter(k => new Set(Object.values(row.harnesses).map(item => item.spec.env[k])).size > 1);
-    const hint = differing.length ? `；${differing.join('、')} 各端取值不同，已按 ${HARNESS_META[source[0]].label} 的值写入，请编辑核对` : '';
-    return { detail: `已把「${key}」从 ${HARNESS_META[source[0]].label} 写入 ${target.mcpFile}（${result.action === 'add' ? '新增' : '更新'}）${hint}`, warn: Boolean(hint) };
-  }
-  if (!row.harnesses[harness]) return { detail: `${label} 没有「${key}」，无需操作` };
+  if (!rows.find(item => item.key === key)?.harnesses[harness]) return { detail: `${label} 没有「${key}」，无需操作` };
   if (target.mcpFormat === 'toml') await removeCodexMcpServer(target.mcpFile, key);
   else await removeJsonMcpServer(target.mcpFile, key);
   return { detail: `已从 ${target.mcpFile} 移除「${key}」` };

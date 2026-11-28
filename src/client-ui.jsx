@@ -91,11 +91,20 @@ export function MatrixCells({ cells, ariaLabel }) {
   );
 }
 
-// 可点的端开关：cells 为 [{ harnessId, status, on, label, disabledReason, busy, onToggle }]
+// 可点的端开关：cells 为 [{ harnessId, status, on, label, disabledReason, busy, onToggle, inert }]
+// inert：这一端只是没有该条目、也不能在这里开启（如 MCP 不做同步），画成普通短横而不是「不可用」斜纹
 export function ToggleCells({ cells, ariaLabel, disabled }) {
   return (
     <div className="ap-cells" role="group" aria-label={ariaLabel}>
       {cells.map(cell => {
+        if (cell.inert) {
+          return (
+            <span key={cell.harnessId} role="img" className="ap-cell ap-cell-static is-none" aria-label={cell.label} title={cell.label}>
+              <Glyph status="none" />
+              <span className="ap-cell-label" aria-hidden="true">{HARNESS_SHORT[cell.harnessId]}</span>
+            </span>
+          );
+        }
         const blocked = Boolean(cell.disabledReason);
         const hint = blocked ? `不可用：${cell.disabledReason}` : cell.hint || (cell.on ? '点击关闭' : '点击开启');
         const glyph = cell.busy ? 'busy' : cell.on ? (cell.status === 'failed' ? 'failed' : 'installed') : blocked ? 'none' : 'unselected';

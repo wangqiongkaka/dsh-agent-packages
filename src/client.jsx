@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import { ENDPOINT, HARNESS_IDS, HEADER_KEY, PLUGIN_ID } from './shared.mjs';
 import { ConfirmBar, FilterChips, IconButton, LogPanel } from './client-ui.jsx';
@@ -51,20 +51,36 @@ const TABS = [
   { id: 'rules', label: '规则', count: s => s.instructions.snippets.length, attention: s => HARNESS_IDS.filter(h => ['modified', 'missing', 'symlink'].includes(s.instructions.harnesses[h].status)).length },
 ];
 
-const NOTES = {
-  skills: '直接读取 4 端 Skills 目录。点亮格子即在该端建软链，熄灭前先确认。',
-  mcp: '直接读取 3 端 MCP 配置。点亮格子即按该端格式复制已有配置，熄灭前先确认。',
-  plugins: '插件请用各端原生命令手工安装（见下方命令），这里只查看各端装了什么。插件带来的 Skills 与 MCP 跟随插件，不能单独同步。',
-  rules: '各端指令文件 = 开启的片段按顺序拼接。开关与保存立即写入；有外部修改的端需确认后覆盖。',
-};
+// 「本机路径」下拉：本视图读写的各端目录、配置文件或命令；点页面别处或按 Esc 收起
+function PathsMenu({ items }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const close = event => {
+      if (ref.current?.open && (event.key === 'Escape' || (event.type === 'mousedown' && !ref.current.contains(event.target)))) ref.current.open = false;
+    };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, []);
+  return (
+    <details ref={ref} className="ap-paths">
+      <summary className="ap-paths-btn">本机路径</summary>
+      <ul className="ap-paths-list" aria-label="本机路径">
+        {items.map(item => (
+          <li key={item.key}>
+            <b>{item.title}</b>
+            <span className={item.mono ? 'ap-mono' : ''}>{item.value}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
 
-// 路径只显示最后三段（如 …/you/.codex/skills），完整路径在悬停提示里
-const shortPath = value => {
-  const parts = value.split('/').filter(Boolean);
-  return value.startsWith('/') && parts.length > 3 ? `…/${parts.slice(-3).join('/')}` : value;
-};
-
-// 每个视图顶部的「本机 4 端」：本视图读写的目录、配置文件或命令
+// 本视图读写的各端目录、配置文件或命令
 function harnessStrip(state, tab) {
   const items = state.harnesses.map(h => ({
     key: h.id,
@@ -75,7 +91,6 @@ function harnessStrip(state, tab) {
           : h.instructionsFile,
     mono: tab === 'mcp' ? Boolean(h.mcpFile) : tab === 'plugins' ? h.supportsPlugins : true,
   }));
-  if (tab === 'skills') items.push({ key: 'trash', title: '回收目录', value: state.trashDir, mono: true });
   if (tab === 'rules') items.push({ key: 'store', title: '片段存储', value: state.instructions.snippetsFile, mono: true });
   return items;
 }
@@ -211,9 +226,9 @@ export function PackagesPage() {
   const rulesDirty = Object.keys(ruleDrafts).length > 0;
 
   const filterOptions = state && tab === 'skills'
-    ? (() => { const g = skillGroups(state); return [['all', '全部', state.skills.rows.length], ['attn', '需处理', g.attn.length], ['owned', '由插件提供', g.owned.length], ['settled', '4 端一致', g.settled.length]]; })()
+    ? (() => { const g = skillGroups(state); return [['all', '全部', state.skills.rows.length], ['attn', '需处理', g.attn.length], ['settled', '4 端一致', g.settled.length]]; })()
     : state && tab === 'mcp'
-      ? (() => { const g = mcpGroups(state); return [['all', '全部', state.mcp.rows.length], ['attn', '需处理', g.attn.length], ['owned', '由插件提供', g.owned.length], ['settled', `${g.writable.length} 端一致`, g.settled.length]]; })()
+      ? (() => { const g = mcpGroups(state); return [['all', '全部', state.mcp.rows.length], ['attn', '需处理', g.attn.length], ['settled', `${g.writable.length} 端一致`, g.settled.length]]; })()
       : null;
 
   return (
@@ -242,20 +257,6 @@ export function PackagesPage() {
         </nav>
       )}
 
-      {state && (
-        <header className="ap-head">
-          <p className="ap-head-note">{NOTES[tab]}</p>
-          <ul className="ap-hstrip" aria-label="本机路径">
-            {harnessStrip(state, tab).map(item => (
-              <li key={item.key}>
-                <b>{item.title}</b>
-                <span className={item.mono ? 'ap-mono' : ''} title={item.value}>{shortPath(item.value)}</span>
-              </li>
-            ))}
-          </ul>
-        </header>
-      )}
-
       {error && (
         <div className="ap-banner-error" role="alert">
           <span>{error}</span>
@@ -280,6 +281,7 @@ export function PackagesPage() {
               </div>
             )}
             <div className="ap-actions ap-toolbar-actions">
+              <PathsMenu items={harnessStrip(state, tab)} />
               {tab !== 'rules' && <Button variant="outline" disabled={busy} title="重新读取 4 端本机配置" onClick={() => void refresh()}>刷新</Button>}
               {tab === 'mcp' && <Button variant="primary" disabled={busy || Boolean(mcpForm)} onClick={() => setMcpForm(newMcpForm(state))}>添加 MCP</Button>}
               {tab === 'rules' && (

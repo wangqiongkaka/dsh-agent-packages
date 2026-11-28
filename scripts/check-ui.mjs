@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -76,12 +76,6 @@ try {
   await mkdir(join(agyDir, 'plugins', 'tidy'), { recursive: true });
   await writeFile(join(agyDir, 'plugins', 'tidy', 'plugin.json'), '{"name":"tidy","version":"1.0.1"}');
 
-  // —— 插件自带的 Skill 与 MCP：tidy 带 tidy-helper 与 tidy-mcp，已落到 DSH Skills 目录与 Codex 配置
-  await makeSkill(join(tidyDir, 'skills'), 'tidy-helper');
-  await writeFile(join(tidyDir, '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy-mcp' } } }));
-  await makeSkill(join(dshHome, 'skills'), 'tidy-helper');
-  await writeFile(join(codexDir, 'config.toml'), `${await readFile(join(codexDir, 'config.toml'), 'utf8')}\n[mcp_servers.tidy-mcp]\ncommand = "tidy-mcp"\n`);
-
   // —— 规则：Codex 有 AGENTS.md，DSH 的 AGENTS.md 是指向它的软链
   await writeFile(join(codexDir, 'AGENTS.md'), '# 全局协作规则\n\n- 所有回复使用中文。\n');
   await symlink(join(codexDir, 'AGENTS.md'), join(dshHome, 'AGENTS.md'));
@@ -132,60 +126,40 @@ try {
   assert.deepEqual(tabNames.map(t => t.replace(/\d+|需处理|待同步/g, '').trim()), ['Skills', 'MCP', '插件', '规则']);
   assert.equal(await page.getByRole('button', { name: /添加包|解析仓库|检查更新/ }).count(), 0, '不再有清单、解析与版本检查入口');
 
-  // 1. Skills：部分端 / 不一致的排前面，4 端一致的折叠
+  // 1. Skills：只读；部分端 / 不一致的排前面，4 端一致的折叠
   await row('notes').waitFor();
   assert.match(await page.locator('.ap-matrix-group').first().innerText(), /需处理\s*3/);
   assert.equal(await page.locator('.ap-pkg-card', { hasText: 'shared-a' }).count(), 0, '4 端一致的默认折叠');
   assert.match(await row('stale').innerText(), /失效软链/);
-  // 插件带来的 Skill：单独成组、标注来源插件、开关一律置灰
-  const helper = row('tidy-helper');
-  assert.match(await page.locator('.ap-matrix-group', { hasText: '由插件提供' }).innerText(), /由插件提供\s*1/);
-  assert.match(await helper.innerText(), /插件 tidy/);
-  for (const h of ['Codex', 'Claude Code', 'Antigravity', 'DSH 原生']) assert.equal(await sw(helper, h).isDisabled(), true, `${h} 应禁止同步`);
-  assert.match(await sw(helper, 'DSH 原生').getAttribute('aria-label'), /由插件 tidy 提供/);
-  // 筛选：只看需处理，插件提供的与 4 端一致的组隐藏
+  assert.equal(await page.locator('.ap-matrix').getByRole('switch').count(), 0, 'Skills 格子只读，不能同步或删除');
+  assert.equal(await row('notes').getByRole('img', { name: /^Claude Code：实体目录 / }).count(), 1);
+  assert.equal(await row('notes').getByRole('img', { name: 'Codex：没有' }).count(), 1);
+  assert.equal(await page.getByRole('group', { name: '筛选' }).getByRole('button', { name: /由插件提供/ }).count(), 0, '不再区分插件提供');
+  // 筛选：只看需处理，4 端一致的组隐藏
   await page.getByRole('group', { name: '筛选' }).getByRole('button', { name: /需处理/ }).click();
-  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'tidy-helper' }).count(), 0);
   assert.equal(await page.locator('.ap-matrix-group', { hasText: '4 端一致' }).count(), 0);
   await page.getByRole('group', { name: '筛选' }).getByRole('button', { name: /全部/ }).click();
   await page.screenshot({ path: 'artifacts/packages-desktop.png', fullPage: true });
-  // 开启 Codex：建软链指向 Claude 的实体目录
-  await sw(row('notes'), 'Codex').click();
-  await notice(/已在 Codex 建立软链/);
-  assert.equal(await readlink(join(codexDir, 'skills', 'notes')), await realpath(join(claudeDir, 'skills', 'notes')));
-  // 关闭源端被拒（Codex 软链指向它），状态不变
-  await sw(row('notes'), 'Claude Code').click();
-  await row('notes').locator('.ap-confirm p').getByText(/实体目录 .* 移入回收目录/).waitFor();
-  await page.getByRole('button', { name: '确认移入回收目录' }).click();
-  await notice(/Codex 的软链指向这个目录/);
-  assert.match(await page.locator('.ap-banner-notice').getAttribute('class'), /is-warn/);
-  assert.equal(await sw(row('notes'), 'Claude Code').getAttribute('aria-checked'), 'true');
-  // 关闭 Codex 的软链
-  await sw(row('notes'), 'Codex').click();
-  await row('notes').locator('.ap-confirm p').getByText(/将删除 Codex 的软链/).waitFor();
-  await page.getByRole('button', { name: '确认删除' }).click();
-  await notice(/已删除 Codex 的软链/);
-  // 成功提示 3 秒后自动消失
-  await page.locator('.ap-banner-notice').waitFor({ state: 'detached', timeout: 5000 });
-  assert.equal(await exists(join(codexDir, 'skills', 'notes')), false);
   // 展开 4 端一致组
   await page.locator('.ap-matrix-group', { hasText: '4 端一致' }).getByRole('button', { name: '展开' }).click();
   await row('shared-a').waitFor();
   await page.screenshot({ path: 'artifacts/packages-skills.png', fullPage: true });
 
-  // 2. MCP：跨格式复制、DSH 不可用、手工添加、编辑保留未建模字段
+  // 2. MCP：添加 / 编辑写入所选端、跨格式翻译、格子只能移除、DSH 不可用
   await page.getByRole('tab', { name: /MCP/ }).click();
   assert.equal(await page.locator('.ap-logs').count(), 0, '执行记录不跨视图');
   const pw = row('playwright');
   assert.equal(await sw(pw, 'DSH 原生').isDisabled(), true);
-  // 插件带来的 MCP：标注来源插件、禁止同步、没有编辑入口
-  const tidyMcp = row('tidy-mcp');
-  assert.match(await tidyMcp.innerText(), /插件 tidy/);
-  assert.equal(await sw(tidyMcp, 'Claude Code').isDisabled(), true);
-  assert.equal(await sw(tidyMcp, 'Codex').isDisabled(), true);
-  assert.equal(await page.getByRole('button', { name: '编辑 tidy-mcp' }).count(), 0);
-  await sw(pw, 'Codex').click();
-  await notice(/已把「playwright」从 Claude Code 写入/);
+  // 没有该 MCP 的端不能点亮同步，提示改用「编辑」
+  assert.equal(await sw(pw, 'Codex').count(), 0, '没有该 MCP 的端不是开关');
+  assert.equal(await pw.getByRole('img', { name: 'Codex：没有，要写入该端请用「编辑」' }).count(), 1);
+  // 编辑时勾选 Codex：按 Codex 格式写入
+  await page.getByRole('button', { name: '编辑 playwright' }).click();
+  await page.locator('.ap-editor .ap-check-item', { hasText: 'Codex' }).locator('input').check();
+  await page.getByRole('button', { name: /^保存并写入/ }).click();
+  await notice(/已把「playwright」写入 Claude Code、Codex/);
+  // 成功提示 3 秒后自动消失
+  await page.locator('.ap-banner-notice').waitFor({ state: 'detached', timeout: 5000 });
   const codexPw = (await readCodexMcpServers(join(codexDir, 'config.toml'))).playwright;
   assert.equal(codexPw.command, 'npx');
   assert.deepEqual(codexPw.env_vars, ['TOKEN']);
@@ -260,7 +234,17 @@ try {
   assert.equal(await tidy.getByRole('img', { name: 'DSH 原生：没有插件机制' }).count(), 1);
   assert.equal(await page.getByRole('button', { name: '添加市场' }).count(), 0);
   assert.equal(await page.locator('.ap-matrix-group', { hasText: '市场' }).count(), 0);
-  await page.getByText(/插件请用各端原生命令手工安装/).waitFor();
+  // 本机路径收在下拉里：插件视图给出各端命令；Esc 或点别处收起
+  assert.equal(await page.locator('.ap-paths-list').isVisible(), false);
+  await page.locator('.ap-paths-btn').click();
+  await page.locator('.ap-paths-list').getByText('claude plugin').waitFor();
+  await page.screenshot({ path: 'artifacts/packages-paths.png', fullPage: true });
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.ap-paths-list').isVisible(), false, 'Esc 收起');
+  await page.locator('.ap-paths-btn').click();
+  await page.locator('.ap-matrix-group').first().click();
+  assert.equal(await page.locator('.ap-paths-list').isVisible(), false, '点别处收起');
+  assert.equal(await page.getByText(/插件请用各端原生命令手工安装|直接读取 4 端/).count(), 0, '视图说明文字已去掉');
   assert.equal(await page.locator('.ap-pkg-card', { hasText: 'browser' }).count(), 0, '内置插件默认折叠');
   await page.locator('.ap-matrix-group', { hasText: '内置插件' }).getByRole('button', { name: '展开' }).click();
   await row('browser').waitFor();

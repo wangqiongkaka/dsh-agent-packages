@@ -1,10 +1,9 @@
-import { join } from 'node:path';
 import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
 import { composeSnippets } from './shared.mjs';
 import { MODELED_KEYS } from './mcp-render.mjs';
 import { defaultExecFile } from './cli.mjs';
-import { listSkills, toggleSkill } from './skills.mjs';
-import { listMcp, mcpHarnesses, saveMcp, toggleMcp } from './mcp.mjs';
+import { listSkills } from './skills.mjs';
+import { listMcp, mcpHarnesses, removeMcp, saveMcp } from './mcp.mjs';
 import { PLUGIN_HARNESSES, listPlugins } from './plugins.mjs';
 import {
   InstructionsStore,
@@ -17,12 +16,11 @@ import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
 const label = harnessId => HARNESS_META[harnessId]?.label ?? harnessId;
 
-function serializeSkills({ rows, errors }, provides) {
+function serializeSkills({ rows, errors }) {
   return {
     errors,
     rows: rows.map(row => ({
       name: row.name,
-      providedBy: provides.skills[row.name] ?? [],
       consistent: row.consistent,
       complete: row.complete,
       harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, {
@@ -39,7 +37,6 @@ export class PackageManagerService {
   constructor(options = {}) {
     if (!options.root) throw new Error('必须提供配置保存目录 root');
     this.root = options.root;
-    this.trashDir = join(this.root, 'trash');
     this.instructionsStore = new InstructionsStore(this.root);
     const staticClaudeConfigDir = typeof options.claudeConfigDir === 'string' ? options.claudeConfigDir.trim() : '';
     this.harnessPaths = resolveHarnessPaths({
@@ -98,13 +95,11 @@ export class PackageManagerService {
         // 各端插件 CLI 的命令名，提示用户手工安装时用哪个命令；Antigravity 固定为 agy
         command: paths[id].command ?? (id === 'antigravity' ? 'agy' : ''),
       })),
-      trashDir: this.trashDir,
-      skills: serializeSkills(skills, plugins.provides),
+      skills: serializeSkills(skills),
       mcp: {
         errors: mcp.errors,
         rows: mcp.rows.map(row => ({
           key: row.key,
-          providedBy: plugins.provides.mcp[row.key] ?? [],
           consistent: row.consistent,
           // extras：各端自己的未建模字段（如 alwaysLoad），供编辑预览与对比显示；写回时服务端原样保留
           harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, {
@@ -129,34 +124,17 @@ export class PackageManagerService {
     const done = async (message, steps = [], ok = true) => ({ ok, message, steps, state: await this.state() });
 
     switch (input.type) {
-      case 'skill.toggle': {
+      case 'mcp.remove': {
         const harness = harnessOf(input.harness);
-        const owners = (await listPlugins(await currentPaths())).provides.skills[input.name];
-        if (owners?.length) throw new HttpError(400, `「${input.name}」由插件 ${owners.join('、')} 提供，跟随插件安装，不能单独同步；需要在其他端使用请在该端手工安装插件`);
         try {
-          const { detail } = await toggleSkill({ harnessPaths: await currentPaths(), name: input.name, harness, on: Boolean(input.on), trashDir: this.trashDir });
+          const { detail } = await removeMcp({ harnessPaths: await currentPaths(), key: input.key, harness });
           return done(detail, [{ harness, status: 'ok', detail }]);
-        } catch (error) {
-          return done(`「${input.name}」在 ${label(harness)} 未变更：${error.message}`, [{ harness, status: 'error', detail: error.message }], false);
-        }
-      }
-
-      case 'mcp.toggle': {
-        const harness = harnessOf(input.harness);
-        const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
-        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，跟随插件安装，不能单独同步；需要在其他端使用请在该端手工安装插件`);
-        try {
-          const { detail, warn = false } = await toggleMcp({ harnessPaths: await currentPaths(), key: input.key, harness, on: Boolean(input.on) });
-          // warn：写入成功但需要人去核对（如按端不同的变量被照常复制），提示条用警示色且不自动消失
-          return { ...await done(detail, [{ harness, status: 'ok', detail }]), warn };
         } catch (error) {
           return done(`「${input.key}」在 ${label(harness)} 未变更：${error.message}`, [{ harness, status: 'error', detail: error.message }], false);
         }
       }
 
       case 'mcp.save': {
-        const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
-        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，不能在这里编辑`);
         try {
           const { steps } = await saveMcp({ harnessPaths: await currentPaths(), key: input.key, spec: input.spec, specs: input.specs, harnesses: input.harnesses });
           return done(`已把「${input.key}」写入 ${steps.map(step => label(step.harness)).join('、')}`, steps);

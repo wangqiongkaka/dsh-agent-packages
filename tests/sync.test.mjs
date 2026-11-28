@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PackageManagerService } from '../src/service.mjs';
@@ -28,60 +28,30 @@ async function makeSkill(dir, name) {
   await writeFile(join(dir, name, 'SKILL.md'), `---\nname: ${name}\n---\n`);
 }
 
-test('Skills：按名称合并 4 端；开启建软链，关闭软链直接删、实体目录移入回收目录', async t => {
-  const { homeDir, dshHome, service } = await setup(t, 'ap-skills-');
+test('Skills：只读，按名称合并 4 端；各端副本不同标为不一致，失效软链标出；页面不再同步或删除', async t => {
+  const { homeDir, service } = await setup(t, 'ap-skills-');
   const claudeSkills = join(homeDir, '.claude', 'skills');
   await makeSkill(claudeSkills, 'notes');
-  await makeSkill(join(homeDir, '.codex', 'skills'), 'other');
-
-  let state = await service.state();
-  assert.deepEqual(state.skills.rows.map(r => r.name), ['notes', 'other']);
-  assert.equal(state.skills.rows[0].complete, false);
-
-  const on = await service.action({ type: 'skill.toggle', name: 'notes', harness: 'codex', on: true });
-  assert.equal(on.ok, true);
-  const codexLink = join(homeDir, '.codex', 'skills', 'notes');
-  assert.equal(await readlink(codexLink), await realpath(join(claudeSkills, 'notes')));
-  assert.equal(on.state.skills.rows.find(r => r.name === 'notes').consistent, true);
-
-  // 关闭实体目录所在端：Codex 软链指向它，拒绝
-  const blocked = await service.action({ type: 'skill.toggle', name: 'notes', harness: 'claude-code', on: false });
-  assert.equal(blocked.ok, false);
-  assert.match(blocked.message, /Codex 的软链指向这个目录/);
-  assert.equal(await exists(join(claudeSkills, 'notes', 'SKILL.md')), true);
-
-  // 先关 Codex（删软链），再关 Claude（实体目录移入回收目录而非删除）
-  await service.action({ type: 'skill.toggle', name: 'notes', harness: 'codex', on: false });
-  assert.equal(await exists(codexLink), false);
-  const off = await service.action({ type: 'skill.toggle', name: 'notes', harness: 'claude-code', on: false });
-  assert.equal(off.ok, true);
-  assert.equal(await exists(join(claudeSkills, 'notes')), false);
-  const trash = join(dshHome, 'dsh-agent-packages', 'trash');
-  const [stamp] = await readdir(trash);
-  assert.equal(await exists(join(trash, stamp, 'claude-code', 'notes', 'SKILL.md')), true);
-  assert.equal(off.state.skills.rows.some(r => r.name === 'notes'), false);
-
-  await assert.rejects(() => service.action({ type: 'skill.toggle', name: '../etc', harness: 'codex', on: true }).then(r => { if (!r.ok) throw new Error(r.message); }), /不合法/);
-});
-
-test('Skills：各端副本不同时标为不一致；失效软链可关闭清理，开启时替换', async t => {
-  const { homeDir, service } = await setup(t, 'ap-skills-diff-');
-  await makeSkill(join(homeDir, '.claude', 'skills'), 'dup');
+  await makeSkill(claudeSkills, 'dup');
   await makeSkill(join(homeDir, '.codex', 'skills'), 'dup');
   const { symlink } = await import('node:fs/promises');
   await mkdir(join(homeDir, '.gemini', 'config', 'skills'), { recursive: true });
   await symlink(join(homeDir, 'missing'), join(homeDir, '.gemini', 'config', 'skills', 'dup'));
 
-  let row = (await service.state()).skills.rows.find(r => r.name === 'dup');
-  assert.equal(row.consistent, false);
-  assert.equal(row.harnesses.antigravity.broken, true);
+  const state = await service.state();
+  assert.deepEqual(state.skills.rows.map(r => r.name), ['dup', 'notes']);
+  const dup = state.skills.rows.find(r => r.name === 'dup');
+  assert.equal(dup.consistent, false);
+  assert.equal(dup.harnesses.antigravity.broken, true);
+  assert.equal(state.skills.rows.find(r => r.name === 'notes').complete, false);
+  assert.equal('providedBy' in dup, false, '不再区分是否由插件提供');
+  assert.equal('trashDir' in state, false);
 
-  await service.action({ type: 'skill.toggle', name: 'dup', harness: 'antigravity', on: true });
-  const target = await readlink(join(homeDir, '.gemini', 'config', 'skills', 'dup'));
-  assert.ok(target.endsWith(join('skills', 'dup')) && !target.includes('missing'), '失效软链被替换为指向实体目录');
+  await assert.rejects(() => service.action({ type: 'skill.toggle', name: 'notes', harness: 'codex', on: true }), /不支持的操作类型/);
+  assert.equal(await exists(join(homeDir, '.codex', 'skills', 'notes')), false);
 });
 
-test('MCP：跨格式翻译写入、关闭移除、手工保存保留各端未建模字段', async t => {
+test('MCP：添加 / 编辑按所选端跨格式写入、保留未建模字段；格子只能移除，不再同步', async t => {
   const { homeDir, service } = await setup(t, 'ap-mcp-');
   const claudeFile = join(homeDir, '.claude.json');
   await writeFile(claudeFile, JSON.stringify({
@@ -94,8 +64,16 @@ test('MCP：跨格式翻译写入、关闭移除、手工保存保留各端未�
   assert.deepEqual(state.mcp.rows.map(r => r.key), ['Chrome-DevTools']);
   assert.equal(state.harnesses.find(h => h.id === 'dsh').supportsMcp, false);
 
-  // Claude → Codex：${TOKEN} 转成 env_vars，具体值进 env
-  const on = await service.action({ type: 'mcp.toggle', key: 'Chrome-DevTools', harness: 'codex', on: true });
+  // 不再提供点格子同步
+  await assert.rejects(() => service.action({ type: 'mcp.toggle', key: 'Chrome-DevTools', harness: 'codex', on: true }), /不支持的操作类型/);
+
+  // 编辑时勾选 Codex：${TOKEN} 转成 env_vars，具体值进 env
+  const on = await service.action({
+    type: 'mcp.save',
+    key: 'Chrome-DevTools',
+    harnesses: ['codex'],
+    spec: { transport: 'stdio', command: 'npx', args: ['chrome-devtools-mcp'], env: { MODE: 'fast' }, envRefs: ['TOKEN'] },
+  });
   assert.equal(on.ok, true);
   const codex = (await readCodexMcpServers(codexFile))['Chrome-DevTools'];
   assert.equal(codex.command, 'npx');
@@ -122,7 +100,7 @@ test('MCP：跨格式翻译写入、关闭移除、手工保存保留各端未�
   await assert.rejects(() => service.action({ type: 'mcp.save', key: 'x', harnesses: ['dsh'], spec: { command: 'x' } }), /至少选择一个可写入 MCP 的端/);
   await assert.rejects(() => service.action({ type: 'mcp.save', key: 'bad key', harnesses: ['codex'], spec: { command: 'x' } }), /MCP key/);
 
-  // 按端不同的变量：同一 key 在各端写入各自的值；只是变量值不同仍算一致；点亮新端时提示去核对
+  // 按端不同的变量：同一 key 在各端写入各自的值；只是变量值不同仍算一致
   const base = { transport: 'stdio', command: 'node', args: ['mcp-server.js'] };
   await service.action({
     type: 'mcp.save',
@@ -134,16 +112,15 @@ test('MCP：跨格式翻译写入、关闭移除、手工保存保留各端未�
   assert.equal((await readCodexMcpServers(codexFile)).hindsight.env.HINDSIGHT_MCP_HARNESS, 'codex');
   assert.equal(JSON.parse(await readFile(claudeFile, 'utf8')).mcpServers.hindsight.env.HINDSIGHT_MCP_HARNESS, 'claude-code');
   assert.equal((await service.state()).mcp.rows.find(r => r.key === 'hindsight').consistent, true, '只是变量值不同算一致');
-  const agyOn = await service.action({ type: 'mcp.toggle', key: 'hindsight', harness: 'antigravity', on: true });
-  assert.match(agyOn.message, /HINDSIGHT_MCP_HARNESS 各端取值不同，已按 Codex 的值写入，请编辑核对/);
-  assert.equal(agyOn.ok, true);
-  assert.equal(agyOn.warn, true, '需要核对的提示用警示色');
 
-  const off = await service.action({ type: 'mcp.toggle', key: 'Chrome-DevTools', harness: 'codex', on: false });
+  // 移除：只删该端的这个 key，其他条目不动
+  const off = await service.action({ type: 'mcp.remove', key: 'Chrome-DevTools', harness: 'codex' });
   assert.equal(off.ok, true);
   assert.equal((await readCodexMcpServers(codexFile))['Chrome-DevTools'], undefined);
-  const dsh = await service.action({ type: 'mcp.toggle', key: 'Chrome-DevTools', harness: 'dsh', on: true });
+  assert.equal((await readCodexMcpServers(codexFile)).hindsight.command, 'node');
+  const dsh = await service.action({ type: 'mcp.remove', key: 'Chrome-DevTools', harness: 'dsh' });
   assert.equal(dsh.ok, false);
+  assert.match(dsh.message, /没有可写入的 MCP 配置文件/);
 });
 
 // 三端已装插件的记录：Claude 装了 tidy@tools，Codex 装了内置的 browser@openai-bundled，Antigravity 装了同名的 tidy
@@ -211,7 +188,7 @@ test('Claude Code 命令配置为 reclaude：按其账号配置目录读写，�
   assert.ok(state.plugins.plugins.find(p => p.id === 'tidy@tools').harnesses['claude-code'], '插件记录从账号配置目录读取');
 });
 
-test('dsh-harness-provider 显式配置 claudeConfigDir：优先于 reclaude 探测，Skills / MCP / 插件都落在该目录', async t => {
+test('dsh-harness-provider 显式配置 claudeConfigDir：优先于 reclaude 探测，Skills / MCP / 插件都按该目录读写', async t => {
   const base = await mkdtemp(join(tmpdir(), 'ap-config-dir-'));
   t.after(() => rm(base, { recursive: true, force: true }));
   const homeDir = join(base, 'home');
@@ -225,10 +202,10 @@ test('dsh-harness-provider 显式配置 claudeConfigDir：优先于 reclaude 探
     execImpl: async () => { throw new Error('显式配置 claudeConfigDir 时不应探测 reclaude'); },
   });
   await service.init();
-  await makeSkill(join(homeDir, '.codex', 'skills'), 'alpha');
-  await service.action({ type: 'skill.toggle', name: 'alpha', harness: 'claude-code', on: true });
-  assert.equal((await lstat(join(configDir, 'skills', 'alpha'))).isSymbolicLink(), true);
-  assert.equal(await exists(join(homeDir, '.claude', 'skills', 'alpha')), false);
+  await makeSkill(join(configDir, 'skills'), 'alpha');
+  await makeSkill(join(homeDir, '.claude', 'skills'), 'stray');
+  const names = (await service.state()).skills.rows.map(r => r.name);
+  assert.deepEqual(names, ['alpha'], 'Claude Code 的 Skills 从配置目录读取，不读默认目录');
   await service.action({ type: 'mcp.save', key: 'dir-mcp', harnesses: ['claude-code'], spec: { command: 'npx', args: ['dir-mcp'] } });
   assert.equal((await readJsonMcpServers(join(configDir, '.claude.json')))['dir-mcp'].command, 'npx');
   assert.equal(await exists(join(homeDir, '.claude.json')), false);
@@ -244,40 +221,4 @@ test('读取 harness-provider 的 claudeCommand 与 claudeConfigDir：缺少设�
   assert.equal(readHarnessClaudeConfigDir(settings([{ ns: 'harness-plugin', value: { claudeConfigDir: ' ~/.rec/x ' } }])), '~/.rec/x');
   assert.equal(readHarnessClaudeConfigDir(settings([{ ns: 'harness-plugin', value: { claudeConfigDir: null } }])), '');
   assert.equal(readHarnessClaudeConfigDir(() => { throw new Error('no settings'); }), '');
-});
-
-test('插件带来的 Skill 与 MCP：标注来源插件，开关与编辑一律拒绝', async t => {
-  const { homeDir, service } = await setup(t, 'ap-owned-');
-  const pluginDir = join(homeDir, '.claude', 'plugins', 'cache', 'tidy');
-  await makeSkill(join(pluginDir, 'skills'), 'helper');
-  await writeFile(join(pluginDir, '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy' } } }));
-  await writeFile(join(homeDir, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'tidy@tools': [{ scope: 'user', version: '1.0.0', installPath: pluginDir }] } }));
-  // 插件把 helper 拷进了 DSH 的 Skills 目录，把 tidy-mcp 写进了 Codex 配置
-  await makeSkill(join(homeDir, '.dsh', 'skills'), 'helper');
-  await makeSkill(join(homeDir, '.dsh', 'skills'), 'mine');
-  await mkdir(join(homeDir, '.codex'), { recursive: true });
-  await writeFile(join(homeDir, '.codex', 'config.toml'), '[mcp_servers.tidy-mcp]\ncommand = "tidy"\n');
-
-  const state = await service.state();
-  assert.deepEqual(state.skills.rows.find(r => r.name === 'helper').providedBy, ['tidy']);
-  assert.deepEqual(state.skills.rows.find(r => r.name === 'mine').providedBy, []);
-  assert.deepEqual(state.mcp.rows.find(r => r.key === 'tidy-mcp').providedBy, ['tidy']);
-  // Agent Plugins 规范的 mcp.json 与 agy 插件的 mcp_config.json 也算插件带来的
-  await writeFile(join(pluginDir, 'mcp.json'), JSON.stringify({ $schema: 'https://agent-plugins.org/schemas/1.0.0/mcp.schema.json', mcpServers: { 'spec-mcp': { type: 'stdio', command: 'x' } } }));
-  const agyPlugin = join(homeDir, '.gemini', 'config', 'plugins', 'agy-only');
-  await mkdir(agyPlugin, { recursive: true });
-  await writeFile(join(agyPlugin, 'mcp_config.json'), JSON.stringify({ mcpServers: { 'agy-mcp': { command: 'y' } } }));
-  const more = (await service.state()).plugins.provides.mcp;
-  assert.deepEqual(more['spec-mcp'], ['tidy']);
-  assert.deepEqual(more['agy-mcp'], ['agy-only']);
-  assert.equal(more.$schema, undefined);
-
-  await assert.rejects(() => service.action({ type: 'skill.toggle', name: 'helper', harness: 'codex', on: true }), /由插件 tidy 提供/);
-  await assert.rejects(() => service.action({ type: 'skill.toggle', name: 'helper', harness: 'dsh', on: false }), /由插件 tidy 提供/);
-  assert.equal(await exists(join(homeDir, '.dsh', 'skills', 'helper', 'SKILL.md')), true, '插件的文件不被删除');
-  await assert.rejects(() => service.action({ type: 'mcp.toggle', key: 'tidy-mcp', harness: 'claude-code', on: true }), /由插件 tidy 提供/);
-  await assert.rejects(() => service.action({ type: 'mcp.save', key: 'tidy-mcp', harnesses: ['codex'], spec: { command: 'x' } }), /由插件 tidy 提供/);
-  // 不是插件带来的照常可以同步
-  const ok = await service.action({ type: 'skill.toggle', name: 'mine', harness: 'codex', on: true });
-  assert.equal(ok.ok, true);
 });
