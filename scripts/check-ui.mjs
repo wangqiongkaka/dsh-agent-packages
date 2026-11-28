@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { build } from 'esbuild';
@@ -30,8 +30,12 @@ async function makeSkill(dir, name) {
 
 // 模拟三端插件 CLI：真实改写各端记录文件，页面按读回的记录判断是否翻转
 const calls = [];
+let failCodexMarketplace = false;
 async function fakeCli(argv) {
   calls.push(argv.join(' '));
+  if (failCodexMarketplace && argv[0] === 'codex' && argv[2] === 'marketplace') {
+    throw new Error(`${argv.join(' ')} 退出码 1：fatal: repository 'https://github.com/acme/extras.git/' not found`);
+  }
   const [bin, , sub, a, b] = argv;
   if (bin === 'claude' && sub === 'marketplace' && a === 'add') {
     const file = join(claudeDir, 'plugins', 'known_marketplaces.json');
@@ -118,6 +122,7 @@ try {
   // —— 规则：Codex 有 AGENTS.md，DSH 的 AGENTS.md 是指向它的软链
   await writeFile(join(codexDir, 'AGENTS.md'), '# 全局协作规则\n\n- 所有回复使用中文。\n');
   await symlink(join(codexDir, 'AGENTS.md'), join(dshHome, 'AGENTS.md'));
+  await writeFile(join(claudeDir, 'CLAUDE.md'), '# Claude 规则\n');
 
   const service = new PackageManagerService({ root: join(dshHome, 'dsh-agent-packages'), homeDir, dshHome, runCommand: fakeCli });
   await service.init();
@@ -161,12 +166,12 @@ try {
   await page.goto(url);
   await page.getByRole('tab', { name: /Skills/ }).waitFor();
   const tabNames = await page.getByRole('tab').allInnerTexts();
-  assert.deepEqual(tabNames.map(t => t.replace(/\d+/g, '').trim()), ['Skills', 'MCP', '插件', '规则']);
+  assert.deepEqual(tabNames.map(t => t.replace(/\d+|需处理|待同步/g, '').trim()), ['Skills', 'MCP', '插件', '规则']);
   assert.equal(await page.getByRole('button', { name: /添加包|解析仓库|检查更新/ }).count(), 0, '不再有清单、解析与版本检查入口');
 
   // 1. Skills：部分端 / 不一致的排前面，4 端一致的折叠
   await row('notes').waitFor();
-  assert.match(await page.locator('.ap-matrix-group').first().innerText(), /部分端 \/ 不一致\s*3/);
+  assert.match(await page.locator('.ap-matrix-group').first().innerText(), /需处理\s*3/);
   assert.equal(await page.locator('.ap-pkg-card', { hasText: 'shared-a' }).count(), 0, '4 端一致的默认折叠');
   assert.match(await row('stale').innerText(), /失效软链/);
   // 插件带来的 Skill：单独成组、标注来源插件、开关一律置灰
@@ -175,6 +180,11 @@ try {
   assert.match(await helper.innerText(), /插件 tidy/);
   for (const h of ['Codex', 'Claude Code', 'Antigravity', 'DSH 原生']) assert.equal(await sw(helper, h).isDisabled(), true, `${h} 应禁止同步`);
   assert.match(await sw(helper, 'DSH 原生').getAttribute('aria-label'), /由插件 tidy 提供/);
+  // 筛选：只看需处理，插件提供的与 4 端一致的组隐藏
+  await page.getByRole('group', { name: '筛选' }).getByRole('button', { name: /需处理/ }).click();
+  assert.equal(await page.locator('.ap-pkg-card', { hasText: 'tidy-helper' }).count(), 0);
+  assert.equal(await page.locator('.ap-matrix-group', { hasText: '4 端一致' }).count(), 0);
+  await page.getByRole('group', { name: '筛选' }).getByRole('button', { name: /全部/ }).click();
   await page.screenshot({ path: 'artifacts/packages-desktop.png', fullPage: true });
   // 开启 Codex：建软链指向 Claude 的实体目录
   await sw(row('notes'), 'Codex').click();
@@ -208,7 +218,7 @@ try {
   assert.match(await tidyMcp.innerText(), /插件 tidy/);
   assert.equal(await sw(tidyMcp, 'Claude Code').isDisabled(), true);
   assert.equal(await sw(tidyMcp, 'Codex').isDisabled(), true);
-  assert.equal(await page.getByRole('button', { name: 'tidy-mcp 更多操作' }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: '编辑 tidy-mcp' }).count(), 0);
   await sw(pw, 'Codex').click();
   await notice(/已把「playwright」从 Claude Code 写入/);
   const codexPw = (await readCodexMcpServers(join(codexDir, 'config.toml'))).playwright;
@@ -217,30 +227,33 @@ try {
   // 手工添加
   await page.getByRole('button', { name: '添加 MCP' }).click();
   await page.locator('#ap-mcp-key').fill('local-api');
-  await page.locator('#ap-mcp-transport').click();
-  await page.getByRole('option', { name: /HTTP/ }).click();
+  await page.getByRole('radio', { name: /HTTP/ }).check();
   await page.locator('#ap-mcp-url').fill('https://example.com/mcp');
   for (const label of ['Codex', 'Claude Code']) await page.locator('.ap-editor .ap-check-item', { hasText: label }).locator('input').uncheck();
+  assert.match(await page.locator('.ap-form-side').innerText(), /"url": "https:\/\/example.com\/mcp"/);
   await page.screenshot({ path: 'artifacts/packages-mcp-form.png', fullPage: true });
-  await page.getByRole('button', { name: '保存并写入' }).click();
+  await page.getByRole('button', { name: /^保存并写入/ }).click();
   await row('local-api').waitFor();
   assert.equal((await readJsonMcpServers(join(agyDir, 'mcp_config.json')))['local-api'].url, 'https://example.com/mcp');
   // 编辑 playwright：只写回 Claude，alwaysLoad 保留
-  await page.getByRole('button', { name: 'playwright 更多操作' }).click();
-  await page.getByRole('menuitem', { name: '编辑' }).click();
+  await page.getByRole('button', { name: '编辑 playwright' }).click();
   assert.equal(await page.locator('#ap-mcp-key').isDisabled(), true);
+  // 将写入预览与服务端同一份渲染：Claude Code 保留 alwaysLoad
+  assert.match(await page.locator('.ap-form-side').innerText(), /"alwaysLoad": true/);
   await page.locator('#ap-mcp-args').fill('@playwright/mcp@latest --headless');
   await page.locator('.ap-editor .ap-check-item', { hasText: 'Codex' }).locator('input').uncheck();
-  await page.getByRole('button', { name: '保存并写入' }).click();
+  await page.getByRole('button', { name: /^保存并写入/ }).click();
   await notice(/已把「playwright」写入 Claude Code/);
   const claudeJson = JSON.parse(await readFile(join(homeDir, '.claude.json'), 'utf8'));
   assert.equal(claudeJson.theme, 'dark');
   assert.equal(claudeJson.mcpServers.playwright.alwaysLoad, true);
   assert.deepEqual(claudeJson.mcpServers.playwright.args, ['@playwright/mcp@latest', '--headless']);
   assert.match(await row('playwright').innerText(), /各端配置不同/);
+  // 展开：逐字段对比，参数一行高亮
+  await row('playwright').getByRole('button', { name: 'playwright', exact: true }).click();
+  assert.match(await row('playwright').locator('.ap-diff tr.is-diff').first().innerText(), /参数/);
   // 各端配置不同时再编辑：默认只写回底稿所在的端，不抹平另一端
-  await page.getByRole('button', { name: 'playwright 更多操作' }).click();
-  await page.getByRole('menuitem', { name: '编辑' }).click();
+  await page.getByRole('button', { name: '编辑 playwright' }).click();
   await page.locator('.ap-editor').getByText(/底稿取自 Codex。各端配置不同/).waitFor();
   assert.equal(await page.locator('.ap-editor .ap-check-item', { hasText: 'Claude Code' }).locator('input').isChecked(), false);
   assert.equal(await page.locator('.ap-editor .ap-check-item', { hasText: 'Codex' }).locator('input').isChecked(), true);
@@ -289,13 +302,32 @@ try {
   await page.getByRole('button', { name: '确认卸载' }).click();
   await notice(/已从 Antigravity 卸载「tidy」/);
   assert.equal(calls.at(-1), 'agy plugin uninstall tidy');
-  // 添加市场
+  // 添加市场：前端按服务端同一规则校验，不合法不执行命令
   await page.getByRole('button', { name: '添加市场' }).click();
+  const callCount = calls.length;
+  await page.locator('#ap-mp-source').fill('~/dev/my-plugins');
+  await page.locator('.ap-editor').getByRole('button', { name: '添加到 2 端' }).click();
+  await page.locator('.ap-editor [role="alert"]').getByText(/本地路径请写绝对路径/).waitFor();
+  assert.equal(calls.length, callCount, '校验不通过不执行命令');
+  // Codex 失败、Claude 成功：表单保留，失败行写明原因，只重试失败的端
+  failCodexMarketplace = true;
   await page.locator('#ap-mp-source').fill('acme/extras');
-  await page.locator('.ap-editor .ap-check-item', { hasText: 'Codex' }).locator('input').uncheck();
-  await page.locator('.ap-editor').getByRole('button', { name: '添加市场' }).click();
+  await page.locator('.ap-editor').getByText('识别为 GitHub 仓库 acme/extras').waitFor();
+  await page.locator('.ap-editor').getByRole('button', { name: '添加到 2 端' }).click();
+  await notice(/添加市场 acme\/extras：1 端失败/);
+  assert.match(await page.locator('.ap-banner-notice').getAttribute('class'), /is-warn/);
+  const badStep = page.locator('.ap-step.is-bad');
+  assert.match(await badStep.innerText(), /Codex[\s\S]*退出码 1/);
+  assert.deepEqual(calls.slice(callCount), ['claude plugin marketplace add acme/extras', 'codex plugin marketplace add acme/extras']);
+  await page.screenshot({ path: 'artifacts/packages-market-fail.png', fullPage: true });
+  await page.setViewportSize({ width: 585, height: 1000 });
+  await page.screenshot({ path: 'artifacts/packages-market-fail-panel.png', fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 1000 });
+  failCodexMarketplace = false;
+  await page.locator('.ap-editor').getByRole('button', { name: '重试 1 端' }).click();
   await notice(/已添加市场 acme\/extras/);
-  assert.equal(calls.at(-1), 'claude plugin marketplace add acme/extras');
+  assert.equal(await page.locator('.ap-editor').count(), 0, '全部成功后关闭表单');
+  assert.deepEqual(calls.slice(callCount + 2), ['codex plugin marketplace add acme/extras'], '只重试失败的端');
   await page.locator('.ap-matrix-group', { hasText: '内置插件' }).getByRole('button', { name: '展开' }).click();
   await row('browser').waitFor();
   await page.screenshot({ path: 'artifacts/packages-plugins.png', fullPage: true });
@@ -303,6 +335,16 @@ try {
   // 4. 规则：纳管本机文件（内容不变）→ 新建片段 → 开启 DSH（软链拆分）→ 预览 → 排序
   await page.getByRole('tab', { name: /规则/ }).click();
   await page.getByText('还没有规则片段').waitFor();
+  // 纳管读取失败：错误留在该行，什么都没改；刷新后该行消失
+  await rm(join(claudeDir, 'CLAUDE.md'));
+  const claudeFileRow = page.locator('.ap-unmanaged-row', { hasText: 'Claude Code · CLAUDE.md' });
+  await claudeFileRow.getByRole('button', { name: '纳管' }).click();
+  await page.getByRole('button', { name: '确认纳管' }).click();
+  await claudeFileRow.locator('.ap-row-error').getByText(/纳管失败：目标文件不存在/).waitFor();
+  assert.equal(await page.locator('.ap-banner-error').count(), 0, '读取失败不再只显示在页面顶部');
+  await page.screenshot({ path: 'artifacts/packages-adopt-fail.png', fullPage: true });
+  await claudeFileRow.getByRole('button', { name: '刷新' }).click();
+  await claudeFileRow.waitFor({ state: 'detached' });
   const codexAgents = await readFile(join(codexDir, 'AGENTS.md'), 'utf8');
   const dshFileRow = page.locator('.ap-unmanaged-row', { hasText: 'DSH 原生 · AGENTS.md' });
   await dshFileRow.getByRole('button', { name: '纳管' }).click();
@@ -320,15 +362,33 @@ try {
   await page.getByRole('button', { name: '添加片段' }).click();
   const dshRule = page.locator('.ap-rule-row', { hasText: 'DSH 私有规则' });
   await dshRule.waitFor();
-  await sw(dshRule, 'DSH 原生').click();
-  await notice(/已保存规则并写入 DSH 原生/);
+  // 写入失败：片段已保存，DSH 标「写入失败」，重试只写这一端
+  await chmod(dshHome, 0o555);
+  try {
+    await sw(dshRule, 'DSH 原生').click();
+    await notice(/已保存规则，1 端写入失败/);
+  } finally {
+    await chmod(dshHome, 0o755);
+  }
+  assert.match(await page.locator('.ap-banner-notice').getAttribute('class'), /is-warn/);
+  assert.match(await page.locator('.ap-file-row').getByRole('img', { name: /^DSH 原生 AGENTS\.md：写入失败/ }).getAttribute('aria-label'), /写入失败/);
+  await page.screenshot({ path: 'artifacts/packages-rules-fail.png', fullPage: true });
+  await page.setViewportSize({ width: 585, height: 1000 });
+  await page.screenshot({ path: 'artifacts/packages-rules-fail-panel.png', fullPage: true });
+  await page.setViewportSize({ width: 1360, height: 1000 });
+  await page.getByRole('button', { name: '重试写入 DSH', exact: true }).click();
+  await notice(/规则同步完成/);
   assert.equal((await lstat(join(dshHome, 'AGENTS.md'))).isSymbolicLink(), false);
   assert.equal(await readFile(join(dshHome, 'AGENTS.md'), 'utf8'), '## DSH 原生私有规则\n- 简短汇报执行进展\n');
   assert.equal(await readFile(join(codexDir, 'AGENTS.md'), 'utf8'), codexAgents, '只写变化的端');
-  await page.getByText('最终写入预览').click();
-  await page.locator('#ap-rule-preview-harness').click();
-  await page.getByRole('option', { name: /DSH 原生/ }).click();
+  await page.locator('.ap-rule-preview .ap-seg-item', { hasText: 'DSH' }).click();
   assert.match(await page.locator('.ap-instr-preview').innerText(), /DSH 原生私有规则/);
+  // 编辑未保存时预览即时反映，并标注
+  await dshRule.getByRole('button', { name: 'DSH 私有规则', exact: true }).click();
+  await page.locator('textarea[id^="ap-rule-content-snippet-"]').fill('## DSH 原生私有规则\n- 编辑中的内容');
+  await page.locator('.ap-rule-preview').getByText('预览包含未保存的编辑').waitFor();
+  assert.match(await page.locator('.ap-instr-preview').innerText(), /编辑中的内容/);
+  await dshRule.getByRole('button', { name: '取消' }).click();
   await page.getByRole('button', { name: '下移 Codex 现有 AGENTS.md' }).click();
   await page.waitForFunction(() => document.querySelectorAll('.ap-rule-row')[0]?.textContent.includes('DSH 私有规则'));
   await page.screenshot({ path: 'artifacts/packages-rules.png', fullPage: true });
@@ -343,10 +403,8 @@ try {
   await page.getByRole('tab', { name: /MCP/ }).click();
   assert.equal(await page.locator('.ap-col-head').isVisible(), false);
   assert.ok(await page.locator('.ap-pkg-card .ap-cell-label').first().isVisible());
-  await page.getByRole('button', { name: 'playwright 更多操作' }).click();
-  const menuBox = await page.getByRole('menu').boundingBox();
-  assert.ok(menuBox.x >= 0 && menuBox.x + menuBox.width <= 390, `移动端菜单超出视口：${JSON.stringify(menuBox)}`);
-  await page.keyboard.press('Escape');
+  const editBox = await page.getByRole('button', { name: '编辑 playwright' }).boundingBox();
+  assert.ok(editBox.x >= 0 && editBox.x + editBox.width <= 390, `移动端行末按钮超出视口：${JSON.stringify(editBox)}`);
   await page.screenshot({ path: 'artifacts/packages-mobile.png', fullPage: true });
 
   // 6. 面板宽度 585：状态列对齐、标题行不换行、工具栏一行、表头与分组标题同一行
@@ -366,6 +424,17 @@ try {
   const groupTitle = await page.locator('.ap-matrix-group').first().locator('h3').boundingBox();
   const colHead = await page.locator('.ap-col-head').first().boundingBox();
   assert.ok(Math.abs(groupTitle.y + groupTitle.height / 2 - (colHead.y + colHead.height / 2)) < 4, '端名表头与分组标题同一行');
+
+  await page.getByRole('tab', { name: /MCP/ }).click();
+  await page.getByRole('button', { name: '添加 MCP' }).click();
+  await page.screenshot({ path: 'artifacts/packages-mcp-form-panel.png', fullPage: true });
+  await page.locator('.ap-editor').getByRole('button', { name: '取消' }).click();
+
+  // 亮色主题：宿主变量换成亮色值后截图核对
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.evaluate(() => document.body.setAttribute('style', 'margin:0;padding:24px;background:#ffffff;color:#202631;--dsw-alias-border-l2:#d9dfe7;--dsw-alias-label-secondary:#5c6573;--dsw-alias-label-primary:#202631;--dsw-alias-bg-layer-1:#ffffff;--dsw-alias-state-active-primary:#386bdd;--dsw-alias-state-error-primary:#b32f35;--dsw-alias-state-success-primary:#18704a'));
+  await page.getByRole('tab', { name: /Skills/ }).click();
+  await page.screenshot({ path: 'artifacts/packages-light.png', fullPage: true });
 
   assert.deepEqual(pageErrors, [], `页面报错：${pageErrors.join('; ')}`);
   assert.deepEqual(failedRequests, [], `请求失败：${failedRequests.join('; ')}`);

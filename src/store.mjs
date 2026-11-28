@@ -2,9 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export function isPlainObject(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
+export { isPlainObject } from './shared.mjs';
 
 export async function writeFileAtomic(filePath, content, mode) {
   await mkdir(dirname(filePath), { recursive: true });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeInstructionContent, composeSnippets } from '../src/shared.mjs';
@@ -105,6 +105,7 @@ test('规则片段端到端：只写变化的端、软链原子拆分、空端�
   const saved = await service.action({ type: 'rules.save', snippets });
   assert.deepEqual(saved.steps.map(s => s.harness).sort(), ['claude-code', 'codex', 'dsh']);
   assert.ok(saved.steps.every(s => s.status === 'ok'));
+  assert.equal(saved.ok, true);
   assert.equal(await readFile(codexFile, 'utf8'), '# 公共规则\n- 保持最小改动\n\n## Codex\n- node --test\n');
   assert.equal((await lstat(dshFile)).isSymbolicLink(), false, 'DSH 软链拆分为独立文件');
   assert.doesNotMatch(await readFile(dshFile, 'utf8'), /Codex/);
@@ -122,6 +123,27 @@ test('规则片段端到端：只写变化的端、软链原子拆分、空端�
   assert.deepEqual(edited.steps.map(s => s.harness), ['dsh']);
   assert.equal(await readFile(claudeFile, 'utf8'), '外部工具写入的内容\n');
   assert.equal(edited.state.instructions.harnesses['claude-code'].status, 'modified');
+
+  // 某端写入失败：片段已保存（saved），整体 ok=false；恢复后只重试该端
+  const codexDir = join(homeDir, '.codex');
+  await chmod(codexDir, 0o555);
+  let failedSave;
+  try {
+    failedSave = await service.action({
+      type: 'rules.save',
+      snippets: edited.state.instructions.snippets.map(s => (s.id === 'codex-only' ? { ...s, content: '## Codex\n- node --test --watch' } : s)),
+    });
+  } finally {
+    await chmod(codexDir, 0o755);
+  }
+  assert.equal(failedSave.ok, false);
+  assert.equal(failedSave.saved, true);
+  assert.match(failedSave.message, /1 端写入失败/);
+  assert.deepEqual(failedSave.steps.map(s => [s.harness, s.status]), [['codex', 'error']]);
+  assert.match(failedSave.state.instructions.snippets.find(s => s.id === 'codex-only').content, /--watch/);
+  const retried = await service.action({ type: 'rules.sync', harnesses: ['codex'] });
+  assert.equal(retried.ok, true);
+  assert.match(await readFile(codexFile, 'utf8'), /--watch/);
 
   // 关掉 Codex 的全部片段：Codex 文件保持原样
   const before = await readFile(codexFile, 'utf8');

@@ -1,0 +1,293 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-28T01:10:43.441575+00:00",
+  "title": "Design System: Skills & MCP 多 Harness 统一管理页",
+  "extensions": {
+    "colorMeta": {
+      "host-accent": {
+        "role": "primary",
+        "displayName": "宿主激活蓝 Host Accent",
+        "canonical": "#386bdd",
+        "tonalRamp": [
+          "#14254d",
+          "#1f3b7a",
+          "#2a50a6",
+          "#386bdd",
+          "#7497e7",
+          "#a5bcf0",
+          "#cddaf6",
+          "#ebf0fc"
+        ]
+      },
+      "host-error": {
+        "role": "error",
+        "displayName": "错误红 Host Error",
+        "canonical": "#b32f35",
+        "tonalRamp": [
+          "#3f1013",
+          "#621a1d",
+          "#862328",
+          "#b32f35",
+          "#ca6d72",
+          "#dda1a4",
+          "#eccbcc",
+          "#f7eaeb"
+        ]
+      },
+      "host-success": {
+        "role": "success",
+        "displayName": "成功绿 Host Success",
+        "canonical": "#18704a",
+        "tonalRamp": [
+          "#08271a",
+          "#0d3e29",
+          "#125438",
+          "#18704a",
+          "#5d9b80",
+          "#97bfae",
+          "#c5dbd2",
+          "#e8f1ed"
+        ]
+      },
+      "amber-warn": {
+        "role": "warning",
+        "displayName": "琥珀警示 Amber Warn",
+        "canonical": "#c47f17",
+        "tonalRamp": [
+          "#452c08",
+          "#6c460d",
+          "#935f11",
+          "#c47f17",
+          "#d6a55d",
+          "#e4c597",
+          "#f0dfc5",
+          "#f9f2e8"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "墨色 Ink",
+        "canonical": "#202631",
+        "tonalRamp": [
+          "#0b0d11",
+          "#12151b",
+          "#181c25",
+          "#202631",
+          "#63676f",
+          "#9b9da2",
+          "#c7c9cc",
+          "#e9e9ea"
+        ]
+      },
+      "slate-muted": {
+        "role": "neutral",
+        "displayName": "石板灰 Slate Muted",
+        "canonical": "#5c6573",
+        "tonalRamp": [
+          "#202328",
+          "#33383f",
+          "#454c56",
+          "#5c6573",
+          "#8d939d",
+          "#b6bac0",
+          "#d6d8dc",
+          "#eff0f1"
+        ]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "细线灰 Hairline",
+        "canonical": "#d9dfe7",
+        "tonalRamp": [
+          "#4c4e51",
+          "#777b7f",
+          "#a3a7ad",
+          "#d9dfe7",
+          "#e4e9ee",
+          "#eef1f4",
+          "#f6f7f9",
+          "#fbfcfd"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "面板底 Panel",
+        "canonical": "#fafbfc",
+        "tonalRamp": [
+          "#585858",
+          "#8a8a8b",
+          "#bcbcbd",
+          "#fafbfc",
+          "#fcfcfd",
+          "#fdfdfe",
+          "#fefefe",
+          "#feffff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "表单标题（添加 MCP、添加市场）。"
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "规则预览等侧栏标题。"
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Tab、正文、条目名称（名称用 600）。"
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "矩阵分组标题，与端名列头同行顶部对齐。"
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "说明行、分组说明、帮助文字、端名列头。"
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "名称、路径、命令、配置预览、执行记录输出。"
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "switch-state",
+        "value": "120ms ease",
+        "purpose": "开关块边框、底色、文字颜色切换。"
+      },
+      {
+        "name": "chevron-rotate",
+        "value": "150ms ease",
+        "purpose": "展开箭头旋转 90°。"
+      },
+      {
+        "name": "busy-spin",
+        "value": "0.9s linear infinite",
+        "purpose": "执行中的转圈；prefers-reduced-motion 时停止。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "460px",
+        "purpose": "插件容器宽度 ≤ 460px：格子换行等分并带端名。"
+      },
+      {
+        "name": "compact-tabs",
+        "value": "560px",
+        "purpose": "≤ 560px：Tab 徽标只显示数字。"
+      },
+      {
+        "name": "wide",
+        "value": "760px",
+        "purpose": "≥ 760px：端列 96px，列头显示全称。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "端开关块",
+      "kind": "custom",
+      "refersTo": "switch-on",
+      "description": "条目 × 4 端矩阵里的格子：接通 / 未接通 / 损坏 / 锁定。",
+      "html": "<div class=\"ds-switches\"><button class=\"ds-switch is-on\" role=\"switch\" aria-checked=\"true\" aria-label=\"Codex：已存在，点击关闭\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3.5 8.5l3 3 6-7\"/></svg></button><button class=\"ds-switch\" role=\"switch\" aria-checked=\"false\" aria-label=\"Claude Code：不存在，点击开启\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M8 4.5v7M4.5 8h7\"/></svg></button><button class=\"ds-switch is-broken\" role=\"switch\" aria-checked=\"true\" aria-label=\"Antigravity：失效软链，点击清理\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4.5 4.5l7 7M11.5 4.5l-7 7\"/></svg></button><button class=\"ds-switch is-blocked\" role=\"switch\" aria-checked=\"false\" disabled aria-label=\"DSH 原生：不可用，没有插件机制\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 8h6\"/></svg></button></div>",
+      "css": ".ds-switches { display: flex; gap: 6px; } .ds-switch { display: inline-grid; place-items: center; width: 42px; height: 34px; border: 1px dashed #b9c0cb; border-radius: 8px; background: transparent; color: #5c6573; cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease; } .ds-switch:hover { border-style: solid; border-color: #386bdd; color: #386bdd; } .ds-switch:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; } .ds-switch.is-on { border-style: solid; border-color: color-mix(in srgb, #386bdd 75%, transparent); background: color-mix(in srgb, #386bdd 16%, transparent); color: #2a55b8; } .ds-switch.is-broken { border-style: solid; border-color: #c47f17; background: color-mix(in srgb, #c47f17 14%, transparent); color: #8b6020; } .ds-switch.is-blocked { cursor: not-allowed; border: 1px solid transparent; opacity: 0.75; background: repeating-linear-gradient(135deg, rgba(32,38,49,0.07) 0 4px, transparent 4px 9px); }"
+    },
+    {
+      "name": "筛选标签",
+      "kind": "chip",
+      "refersTo": "filter-chip",
+      "description": "矩阵上方的分组筛选，带计数。",
+      "html": "<div class=\"ds-chips\"><button class=\"ds-chip\" aria-pressed=\"true\">全部<span>6</span></button><button class=\"ds-chip\" aria-pressed=\"false\">需处理<span>3</span></button><button class=\"ds-chip\" aria-pressed=\"false\">4 端一致<span>2</span></button></div>",
+      "css": ".ds-chips { display: flex; gap: 6px; } .ds-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border: 1px solid #d9dfe7; border-radius: 999px; background: transparent; color: #5c6573; font: 12.5px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; cursor: pointer; } .ds-chip span { font-size: 11px; color: #5c6573; } .ds-chip:hover { color: #202631; border-color: #aab2bf; } .ds-chip:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; } .ds-chip[aria-pressed=\"true\"] { color: #202631; border-color: color-mix(in srgb, #386bdd 60%, transparent); background: color-mix(in srgb, #386bdd 14%, transparent); }"
+    },
+    {
+      "name": "行末图标按钮",
+      "kind": "button",
+      "refersTo": "icon-button",
+      "description": "编辑、更新、刷新、上移、下移、删除等次要动作。",
+      "html": "<div style=\"display:flex;gap:2px\"><button class=\"ds-icon-btn\" aria-label=\"编辑 playwright\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M10.5 3l2.5 2.5L6 12.5H3.5V10z\"/></svg></button><button class=\"ds-icon-btn is-danger\" aria-label=\"删除片段\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5\"/></svg></button></div>",
+      "css": ".ds-icon-btn { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #5c6573; cursor: pointer; } .ds-icon-btn:hover { background: rgba(32,38,49,0.06); color: #202631; } .ds-icon-btn.is-danger:hover { color: #b32f35; } .ds-icon-btn:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; }"
+    },
+    {
+      "name": "搜索输入框",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "工具栏搜索与表单字段。",
+      "html": "<label class=\"ds-field\"><span>市场来源</span><input class=\"ds-input\" placeholder=\"owner/repo、Git 地址或本地绝对路径\" value=\"acme/extras\"></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 5px; font: 12px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #5c6573; } .ds-input { height: 36px; width: 280px; padding: 7px 10px; border: 1px solid #d9dfe7; border-radius: 8px; background: #fafbfc; color: #202631; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-input:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; }"
+    },
+    {
+      "name": "下划线 Tab",
+      "kind": "nav",
+      "refersTo": "",
+      "description": "4 个视图切换，带数量与需处理徽标。",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">Skills<span class=\"ds-count\">6</span><span class=\"ds-attn\">3 需处理</span></button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">MCP<span class=\"ds-count\">4</span></button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">插件<span class=\"ds-count\">2</span></button></div>",
+      "css": ".ds-tabs { display: flex; gap: 22px; border-bottom: 1px solid #d9dfe7; } .ds-tab { display: inline-flex; align-items: center; gap: 6px; height: 42px; padding: 0 2px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #5c6573; font: 500 14px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; cursor: pointer; } .ds-tab:hover { color: #202631; } .ds-tab:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; } .ds-tab[aria-selected=\"true\"] { color: #202631; border-bottom-color: #386bdd; } .ds-count { font-size: 12px; color: #5c6573; } .ds-attn { padding: 0 7px; border-radius: 999px; font-size: 11px; line-height: 18px; color: #8b6020; background: color-mix(in srgb, #c47f17 14%, transparent); }"
+    },
+    {
+      "name": "状态提示条",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "操作结果：成功为绿，部分失败为琥珀，可关闭。",
+      "html": "<div class=\"ds-banner is-warn\" role=\"status\"><span>添加市场 acme/extras：1 端失败，请查看执行记录</span><button class=\"ds-banner-close\" aria-label=\"关闭提示\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 4l8 8M12 4l-8 8\"/></svg></button></div>",
+      "css": ".ds-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px 6px 12px; border-radius: 9px; font: 13px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #18704a; border: 1px solid color-mix(in srgb, #18704a 40%, transparent); background: color-mix(in srgb, #18704a 7%, transparent); } .ds-banner.is-warn { color: #8b6020; border-color: color-mix(in srgb, #c47f17 45%, transparent); background: color-mix(in srgb, #c47f17 7%, transparent); } .ds-banner-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; } .ds-banner-close:hover { background: rgba(32,38,49,0.06); } .ds-banner-close:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; }"
+    },
+    {
+      "name": "矩阵卡片",
+      "kind": "card",
+      "refersTo": "matrix-card",
+      "description": "分组标题行 + 条目行，端列对齐。",
+      "html": "<div class=\"ds-matrix\"><div class=\"ds-group\"><b>需处理 <span>3</span></b><span class=\"ds-heads\"><span>Codex</span><span>Claude</span><span>Agy</span><span>DSH</span></span></div><div class=\"ds-row\"><div><div class=\"ds-name\">notes</div><div class=\"ds-meta\">仅 Claude Code · ~/.claude/skills/notes</div></div><span class=\"ds-heads\"><span>＋</span><span>✓</span><span>＋</span><span>＋</span></span></div></div>",
+      "css": ".ds-matrix { width: 520px; border: 1px solid #d9dfe7; border-radius: 12px; background: #fafbfc; overflow: hidden; font: 14px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #202631; } .ds-group, .ds-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 8px 14px; } .ds-group { background: rgba(32,38,49,0.03); font-size: 13px; } .ds-group b span { font-weight: 400; color: #5c6573; } .ds-row { min-height: 60px; border-top: 1px solid rgba(217,223,231,0.6); } .ds-heads { display: flex; } .ds-heads span { width: 48px; text-align: center; font-size: 11.5px; color: #5c6573; } .ds-name { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-meta { font-size: 12px; color: #5c6573; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "配线架 Patch Bay",
+    "overview": "页面是一块配线架：每个 Skill、MCP、插件或规则片段是一排插孔，右侧 4 列是 Codex、Claude Code、Antigravity、DSH 原生 4 个插口，点亮一格就是把这一端接通。所有视觉决定都服务于「一眼看清哪些端接通、哪些没接、哪些坏了」，其余元素退到中性色里。\n\n这是 DSH 设置页里的一个分类（Operate 场景），与宿主融为一体：颜色全部来自宿主主题变量 `--dsw-alias-*`，亮色和暗色主题共用同一套规则；不引入自有字体、阴影或装饰图形。密度中等偏紧，常见面板宽度约 585px，也要在 390px 窄屏和 1120px 宽屏下成立。",
+    "keyCharacteristics": [
+      "条目 × 4 端矩阵是唯一的主结构，4 个视图共用，端列在所有行严格对齐。",
+      "状态用「形状 + 颜色」双重编码，从不只靠颜色。",
+      "中性色为底，主题色只出现在已接通的格子、选中态和每个区域唯一的主操作上。",
+      "平面分层，无阴影；层次靠细边框和浅色分组底区分。"
+    ],
+    "rules": [
+      {
+        "name": "The Connected-Only Rule",
+        "body": "主题蓝只表示「已接通 / 已选中 / 主操作」。不要用它做装饰、分组标题或普通链接以外的强调。",
+        "section": "colors"
+      },
+      {
+        "name": "The Never-Color-Alone Rule",
+        "body": "每种状态都同时有形状：✓ 接通、虚线 + 未接通、✕ 损坏、斜纹锁定、◇ 待同步、转圈执行中。去掉颜色后状态仍然可读。",
+        "section": "colors"
+      },
+      {
+        "name": "The One-Line Name Rule",
+        "body": "条目名称和徽章保持一行；空间不足时只截断名称（悬停看全名），徽章完整保留。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-Panel Rule",
+        "body": "不加 box-shadow。需要突出某块时换边框颜色和浅底，不抬高它。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** 让同一视图里所有端列严格对齐：新增矩阵时沿用三列网格 + `subgrid`，并固定行末动作列宽。",
+      "**Do** 每种新状态同时给出形状和颜色，并在 `aria-label` 写明「端名：状态」。",
+      "**Do** 颜色一律从 `--dsw-alias-*` 派生（`color-mix`），确保亮色和暗色主题都成立。",
+      "**Do** 在 585px、390px 与 ≥ 760px 三个宽度下检查布局。"
+    ],
+    "donts": [
+      "**Don't** 加阴影、渐变或装饰图形。",
+      "**Don't** 在页面内重复「Skills & MCP」标题，宿主已经显示。",
+      "**Don't** 用主题蓝表示「已接通 / 选中 / 主操作」以外的含义。",
+      "**Don't** 在一个区域放第二个 `primary` 按钮。",
+      "**Don't** 在页面上显示 MCP 环境变量或其他字符串配置的值，只显示名称。"
+    ]
+  }
+}

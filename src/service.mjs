@@ -1,6 +1,7 @@
 import { dirname, join } from 'node:path';
 import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
-import { composeSnippets } from './shared.mjs';
+import { MARKETPLACE_SOURCE_RE, composeSnippets } from './shared.mjs';
+import { MODELED_KEYS } from './mcp-render.mjs';
 import { defaultExecFile, runCommand } from './cli.mjs';
 import { listSkills, toggleSkill } from './skills.mjs';
 import { listMcp, mcpHarnesses, saveMcp, toggleMcp } from './mcp.mjs';
@@ -23,7 +24,6 @@ import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
 // owner/repo[@ref]、HTTPS / SSH Git 地址或本地绝对路径
-const MARKETPLACE_SOURCE_RE = /^(?:[\w.-]+\/[\w.-]+(?:@[\w./-]+)?|https:\/\/\S+|git@[\w.-]+:\S+|\/\S+)$/;
 
 const label = harnessId => HARNESS_META[harnessId]?.label ?? harnessId;
 
@@ -139,6 +139,8 @@ export class PackageManagerService {
         instructionsFile: paths[id].instructionsFile,
         supportsMcp: mcpHarnesses(paths).includes(id),
         supportsPlugins: PLUGIN_HARNESSES.includes(id),
+        // 各端插件 CLI 的命令名；Antigravity 固定为 agy（见 plugins.mjs）
+        command: paths[id].command ?? (id === 'antigravity' ? 'agy' : ''),
       })),
       trashDir: this.trashDir,
       skills: serializeSkills(skills, plugins.provides),
@@ -148,7 +150,11 @@ export class PackageManagerService {
           key: row.key,
           providedBy: plugins.provides.mcp[row.key] ?? [],
           consistent: row.consistent,
-          harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, { spec: item.spec }])),
+          // extras：各端自己的未建模字段（如 alwaysLoad），供编辑预览与对比显示；写回时服务端原样保留
+          harnesses: Object.fromEntries(Object.entries(row.harnesses).map(([h, item]) => [h, {
+            spec: item.spec,
+            extras: Object.fromEntries(Object.entries(item.raw ?? {}).filter(([field]) => !MODELED_KEYS.includes(field) && field !== 'type')),
+          }])),
         })),
       },
       plugins,
@@ -330,7 +336,10 @@ export class PackageManagerService {
           : [];
         const errorCount = steps.filter(step => step.status === 'error').length;
         const labels = changed.map(h => HARNESS_META[h].label).join('、');
+        // saved：片段已存储（草稿可清除）；ok：所有需要写入的端都成功
         return {
+          ok: !errorCount,
+          saved: true,
           message: !changed.length
             ? '已保存规则，各端文件无需改动'
             : errorCount
@@ -352,6 +361,7 @@ export class PackageManagerService {
         const errorCount = result.steps.filter(s => s.status === 'error').length;
         const okCount = result.steps.filter(s => s.status === 'ok').length;
         return {
+          ok: !errorCount,
           message: dryRun
             ? `规则同步预览完成（涉及 ${result.steps.length} 端）`
             : errorCount

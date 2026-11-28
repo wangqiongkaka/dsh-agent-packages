@@ -1,4 +1,3 @@
-import { useEffect, useId, useRef, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import { HARNESS_IDS, HARNESS_META } from './shared.mjs';
 
@@ -9,7 +8,7 @@ export function stepBadgeClass(status) {
   return 'ap-badge';
 }
 
-// 对齐状态列的表头只有约 44px 宽，用短名；完整端名放在每格的 aria-label / title 里
+// 窄面板表头用短名；完整端名放在每格的 aria-label / title 里
 export const HARNESS_SHORT = { codex: 'Codex', 'claude-code': 'Claude', antigravity: 'Agy', dsh: 'DSH' };
 
 const STEP_STATUS_LABELS = {
@@ -23,28 +22,32 @@ const STEP_STATUS_LABELS = {
 };
 
 function glyphKind(status) {
-  if (status === 'installed' || status === 'managed') return 'ok';
+  if (status === 'installed') return 'ok';
   if (status === 'failed') return 'fail';
-  if (status === 'not-installed') return 'pending';
-  if (status === 'unmanaged') return 'present';
-  if (status === 'uninstalled') return 'idle';
+  if (status === 'busy') return 'busy';
+  if (status === 'not-installed') return 'warn';
+  if (status === 'unmanaged') return 'file';
+  if (status === 'unselected') return 'add';
   return 'none';
 }
 
-// 形状 + 颜色双重编码：实心点=已装（诊断里中性色实心点=未纳管），空心环=待装/已卸载，✕=失败，短横=未启用
+// 形状 + 颜色双重编码：✓=已有，+=可开启，✕=损坏/失败，◇=待同步，旋转圈=执行中，文档=未纳管文件，短横=无
 export function Glyph({ status }) {
   const kind = glyphKind(status);
   return (
-    <svg className={`ap-glyph ap-glyph-${kind}`} viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">
-      {(kind === 'ok' || kind === 'present') && <circle cx="6" cy="6" r="4.5" fill="currentColor" />}
-      {(kind === 'pending' || kind === 'idle') && <circle cx="6" cy="6" r="3.75" fill="none" stroke="currentColor" strokeWidth="1.6" />}
-      {kind === 'fail' && <path d="M3 3l6 6M9 3l-6 6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />}
-      {kind === 'none' && <path d="M3.5 6h5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />}
+    <svg className={`ap-glyph ap-glyph-${kind}`} viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round">
+      {kind === 'ok' && <path d="M3.5 8.5l3 3 6-7" strokeWidth="2" />}
+      {kind === 'fail' && <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" strokeWidth="2" />}
+      {kind === 'busy' && <circle cx="8" cy="8" r="5" strokeWidth="2" strokeDasharray="22 10" />}
+      {kind === 'warn' && <path d="M8 3l5 5-5 5-5-5z" strokeWidth="1.6" />}
+      {kind === 'file' && <path d="M4 2.5h5l3 3v8H4zM9 2.5v3h3" strokeWidth="1.4" />}
+      {kind === 'add' && <path d="M8 4.5v7M4.5 8h7" strokeWidth="1.6" />}
+      {kind === 'none' && <path d="M5 8h6" strokeWidth="1.6" />}
     </svg>
   );
 }
 
-// 分组标题行与数据行共用三列网格；第一个分组带端名表头，与标题同一行对齐
+// 分组标题行与数据行共用三列网格；第一个分组带端名表头，与标题同一行对齐（宽面板显示全称，窄面板显示简称）
 export function MatrixGroup({ title, count, labels = false, children }) {
   return (
     <div className="ap-matrix-group">
@@ -55,7 +58,10 @@ export function MatrixGroup({ title, count, labels = false, children }) {
       {labels ? (
         <div className="ap-cells ap-col-head" aria-hidden="true">
           {HARNESS_IDS.map(h => (
-            <span key={h} className="ap-cell" title={HARNESS_META[h].label}>{HARNESS_SHORT[h]}</span>
+            <span key={h} className="ap-cell" title={HARNESS_META[h].label}>
+              <span className="ap-col-full">{HARNESS_META[h].label}</span>
+              <span className="ap-col-short">{HARNESS_SHORT[h]}</span>
+            </span>
           ))}
         </div>
       ) : <span />}
@@ -64,7 +70,7 @@ export function MatrixGroup({ title, count, labels = false, children }) {
   );
 }
 
-// cells: [{ harnessId, status, label, text? }]，text 用于展示数量等非状态值
+// 只读状态格：cells 为 [{ harnessId, status, label, caption? }]，caption 显示在图形下方
 export function MatrixCells({ cells, ariaLabel }) {
   return (
     <div className="ap-cells" role="group" aria-label={ariaLabel}>
@@ -72,11 +78,12 @@ export function MatrixCells({ cells, ariaLabel }) {
         <span
           key={cell.harnessId}
           role="img"
-          className={`ap-cell ${cell.muted ? 'is-muted' : ''}`.trim()}
+          className={`ap-cell ap-cell-static is-${glyphKind(cell.status)}`}
           aria-label={cell.label}
           title={cell.label}
         >
-          {cell.text != null ? <span className="ap-cell-num">{cell.text}</span> : <Glyph status={cell.status} />}
+          <Glyph status={cell.status} />
+          {cell.caption && <span className="ap-cell-caption">{cell.caption}</span>}
           <span className="ap-cell-label" aria-hidden="true">{HARNESS_SHORT[cell.harnessId]}</span>
         </span>
       ))}
@@ -84,13 +91,14 @@ export function MatrixCells({ cells, ariaLabel }) {
   );
 }
 
-// 可点的端开关：cells 为 [{ harnessId, status, on, text?, label, disabledReason, busy, onToggle }]
+// 可点的端开关：cells 为 [{ harnessId, status, on, label, disabledReason, busy, onToggle }]
 export function ToggleCells({ cells, ariaLabel, disabled }) {
   return (
     <div className="ap-cells" role="group" aria-label={ariaLabel}>
       {cells.map(cell => {
         const blocked = Boolean(cell.disabledReason);
         const hint = blocked ? `不可用：${cell.disabledReason}` : cell.hint || (cell.on ? '点击关闭' : '点击开启');
+        const glyph = cell.busy ? 'busy' : cell.on ? (cell.status === 'failed' ? 'failed' : 'installed') : blocked ? 'none' : 'unselected';
         return (
           <button
             key={cell.harnessId}
@@ -100,12 +108,10 @@ export function ToggleCells({ cells, ariaLabel, disabled }) {
             aria-label={`${cell.label}，${hint}`}
             title={`${cell.label} · ${hint}`}
             disabled={disabled || blocked}
-            className={`ap-cell ap-switch ${cell.on ? 'is-on' : ''} ${blocked ? 'is-blocked' : ''} ${cell.busy ? 'is-busy' : ''}`.trim()}
+            className={`ap-cell ap-switch ${cell.on ? 'is-on' : ''} ${cell.status === 'failed' ? 'is-broken' : ''} ${blocked ? 'is-blocked' : ''} ${cell.busy ? 'is-busy' : ''}`.replace(/\s+/g, ' ').trim()}
             onClick={() => cell.onToggle(!cell.on)}
           >
-            {cell.text != null
-              ? <span className="ap-cell-num">{cell.text}</span>
-              : <Glyph status={cell.busy ? 'not-installed' : cell.status} />}
+            <Glyph status={glyph} />
             <span className="ap-cell-label" aria-hidden="true">{HARNESS_SHORT[cell.harnessId]}</span>
           </button>
         );
@@ -114,8 +120,45 @@ export function ToggleCells({ cells, ariaLabel, disabled }) {
   );
 }
 
+const ICONS = {
+  edit: 'M10.5 3l2.5 2.5L6 12.5H3.5V10z',
+  update: 'M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10',
+  refresh: 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3',
+  up: 'M8 13V3M4 7l4-4 4 4',
+  down: 'M8 3v10M4 9l4 4 4-4',
+  trash: 'M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5',
+  close: 'M4 4l8 8M12 4l-8 8',
+  copy: 'M5.5 5.5h7v7h-7zM3.5 10.5v-7h7',
+};
+
+// 行末次要动作：图标按钮，名称写在 aria-label 与 title 里
+export function IconButton({ icon, label, className = '', ...props }) {
+  return (
+    <button type="button" className={`ap-icon-btn ${className}`.trim()} aria-label={label} title={label} {...props}>
+      <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d={ICONS[icon]} /></svg>
+    </button>
+  );
+}
+
+// 分组筛选：options 为 [{ id, label, count }]
+export function FilterChips({ options, value, onChange }) {
+  return (
+    <div className="ap-chips" role="group" aria-label="筛选">
+      {options.map(option => (
+        <button key={option.id} type="button" className="ap-chip" aria-pressed={value === option.id} onClick={() => onChange(option.id)}>
+          {option.label}<span className="ap-chip-count">{option.count}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export const isFailedStep = step => step.status === 'error' || step.status === 'failed';
+
 export function LogPanel({ log, onClear }) {
-  const failed = log.steps.filter(step => step.status === 'error' || step.status === 'failed').length;
+  const failed = log.steps.filter(isFailedStep).length;
+  // 失败的步骤排在最前，展开即见
+  const steps = [...log.steps].sort((a, b) => isFailedStep(b) - isFailedStep(a));
   const summary = failed
     ? `${failed} 步失败`
     : log.preview ? '仅预览，未写入' : '全部完成';
@@ -127,7 +170,7 @@ export function LogPanel({ log, onClear }) {
         <span className={failed ? 'ap-logs-sum is-error' : 'ap-help'}>{log.steps.length} 步 · {summary}</span>
       </summary>
       <div className="ap-log-list">
-        {log.steps.map((step, index) => (
+        {steps.map((step, index) => (
           <div key={index} className="ap-log-item">
             <div className="ap-log-top">
               <span className={stepBadgeClass(step.status)}>{STEP_STATUS_LABELS[step.status] || step.status}</span>
@@ -162,176 +205,6 @@ export function LogPanel({ log, onClear }) {
 
 // 需要处理的包给出一句原因与一个修复动作；返回 null 表示已就绪
 
-export function Select({
-  id,
-  value,
-  options,
-  onChange,
-  ariaLabel,
-  className = '',
-  menuAlign = 'left',
-  disabled = false,
-}) {
-  const [open, setOpen] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(-1);
-  const wrapRef = useRef(null);
-  const triggerRef = useRef(null);
-  const listId = useId();
-
-  const selectedIndex = Math.max(0, options.findIndex(opt => opt.value === value));
-  const selectedOption = options[selectedIndex] || options[0] || null;
-
-  useEffect(() => {
-    if (disabled && open) setOpen(false);
-  }, [disabled, open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = event => {
-      if (wrapRef.current && !wrapRef.current.contains(event.target)) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = event => {
-      if (event.key === 'Escape') {
-        event.stopPropagation();
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
-    };
-  }, [open]);
-
-  function openMenu() {
-    if (disabled || !options.length) return;
-    setActiveIndex(selectedIndex);
-    setOpen(true);
-  }
-
-  function commit(index) {
-    const opt = options[index];
-    if (!opt) return;
-    if (opt.value !== value) onChange(opt.value);
-    setOpen(false);
-    triggerRef.current?.focus();
-  }
-
-  function handleTriggerKeyDown(event) {
-    if (disabled || !options.length) return;
-    if (!open) {
-      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) {
-        event.preventDefault();
-        openMenu();
-      }
-      return;
-    }
-    if (event.key === 'ArrowDown') {
-      event.preventDefault();
-      setActiveIndex(i => (i + 1) % options.length);
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault();
-      setActiveIndex(i => (i - 1 + options.length) % options.length);
-    } else if (event.key === 'Home') {
-      event.preventDefault();
-      setActiveIndex(0);
-    } else if (event.key === 'End') {
-      event.preventDefault();
-      setActiveIndex(options.length - 1);
-    } else if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault();
-      commit(activeIndex >= 0 ? activeIndex : selectedIndex);
-    } else if (event.key === 'Tab') {
-      setOpen(false);
-    }
-  }
-
-  return (
-    <div
-      ref={wrapRef}
-      className={`ap-select-wrap ${open ? 'is-open' : ''} ${className}`.trim()}
-    >
-      <button
-        ref={triggerRef}
-        id={id}
-        type="button"
-        role="combobox"
-        disabled={disabled}
-        aria-label={ariaLabel}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        aria-activedescendant={open && activeIndex >= 0 ? `${listId}-opt-${activeIndex}` : undefined}
-        className="ap-select-trigger"
-        onClick={() => (open ? setOpen(false) : openMenu())}
-        onKeyDown={handleTriggerKeyDown}
-      >
-        <span className="ap-select-value">{selectedOption?.label ?? ''}</span>
-        <svg className="ap-select-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-          <path
-            d="M4.25 6.25L8 10l3.75-3.75"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.65"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-      {open && (
-        <div
-          id={listId}
-          role="listbox"
-          aria-label={ariaLabel}
-          className={`ap-select-menu ${menuAlign === 'right' ? 'ap-select-menu-right' : ''}`.trim()}
-        >
-          {options.map((opt, idx) => {
-            const selected = opt.value === value;
-            const active = idx === activeIndex;
-            return (
-              <button
-                key={opt.value}
-                id={`${listId}-opt-${idx}`}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                className={`ap-select-option ${active ? 'is-active' : ''}`.trim()}
-                onMouseEnter={() => setActiveIndex(idx)}
-                onMouseDown={e => e.preventDefault()}
-                onClick={() => commit(idx)}
-              >
-                <span className="ap-select-option-label">{opt.label}</span>
-                <span className="ap-select-option-tail">
-                  {opt.meta && <span className="ap-select-option-meta">{opt.meta}</span>}
-                  <span className="ap-select-check-slot" aria-hidden="true">
-                    {selected && (
-                      <svg className="ap-select-check" viewBox="0 0 16 16" width="14" height="14">
-                        <path
-                          d="M3.5 8.5L6.5 11.5L12.5 4.75"
-                          fill="none"
-                          stroke="currentColor"
-                          strokeWidth="1.75"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-
 // 行内确认条：破坏性操作先写明后果，确认后才执行
 export function ConfirmBar({ confirm, busy, onCancel, onConfirm }) {
   return (
@@ -350,6 +223,11 @@ export function ConfirmBar({ confirm, busy, onCancel, onConfirm }) {
       </div>
     </div>
   );
+}
+
+// 名称下方的一行说明（来源、版本、路径等），保持一行，过长截断
+export function RowMeta({ children, indent = false }) {
+  return children ? <p className={`ap-row-meta ${indent ? 'is-indent' : ''}`.trim()} title={typeof children === 'string' ? children : undefined}>{children}</p> : null;
 }
 
 export function RowToggle({ open, onClick, title, controls, mono = false }) {

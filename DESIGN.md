@@ -1,6 +1,235 @@
+---
+name: Skills & MCP 多 Harness 统一管理页
+description: 在 DSH 设置页里用「条目 × 4 端」矩阵查看并同步 Skills、MCP、插件与规则
+colors:
+  host-accent: "#386bdd"
+  host-error: "#b32f35"
+  host-success: "#18704a"
+  amber-warn: "#c47f17"
+  ink: "#202631"
+  slate-muted: "#5c6573"
+  hairline: "#d9dfe7"
+  panel: "#fafbfc"
+typography:
+  title:
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "16px"
+    fontWeight: 600
+    lineHeight: 1.55
+  headline:
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "15px"
+    fontWeight: 600
+    lineHeight: 1.55
+  body:
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "14px"
+    fontWeight: 400
+    lineHeight: 1.55
+  label:
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "13px"
+    fontWeight: 600
+    lineHeight: "20px"
+  caption:
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 1.55
+  mono:
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace"
+    fontSize: "12px"
+    fontWeight: 400
+    lineHeight: 1.6
+rounded:
+  seg: "6px"
+  icon: "7px"
+  control: "8px"
+  callout: "9px"
+  card: "12px"
+  pill: "999px"
+spacing:
+  xs: "4px"
+  sm: "6px"
+  md: "8px"
+  lg: "12px"
+  xl: "16px"
+  2xl: "20px"
+components:
+  switch-on:
+    backgroundColor: "color-mix(in srgb, #386bdd 16%, transparent)"
+    textColor: "{colors.host-accent}"
+    rounded: "{rounded.control}"
+    height: "34px"
+  switch-off:
+    backgroundColor: "transparent"
+    textColor: "{colors.slate-muted}"
+    rounded: "{rounded.control}"
+    height: "34px"
+  switch-broken:
+    backgroundColor: "color-mix(in srgb, #c47f17 14%, transparent)"
+    textColor: "{colors.amber-warn}"
+    rounded: "{rounded.control}"
+    height: "34px"
+  filter-chip:
+    backgroundColor: "transparent"
+    textColor: "{colors.slate-muted}"
+    rounded: "{rounded.pill}"
+    height: "30px"
+    padding: "0 12px"
+  filter-chip-selected:
+    backgroundColor: "color-mix(in srgb, #386bdd 14%, transparent)"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.pill}"
+    height: "30px"
+  icon-button:
+    backgroundColor: "transparent"
+    textColor: "{colors.slate-muted}"
+    rounded: "{rounded.icon}"
+    size: "32px"
+  input:
+    backgroundColor: "{colors.panel}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.control}"
+    height: "36px"
+    padding: "7px 10px"
+  matrix-card:
+    backgroundColor: "{colors.panel}"
+    rounded: "{rounded.card}"
+---
+
 # Skills / MCP / 插件 / 规则 多 Harness 统一管理页（dsh-agent-packages）
 
 定位：在 Codex、Claude Code、Antigravity、DSH 原生 4 个 Harness 之间查看并同步 Skills、MCP、插件与规则（全局指令）。
+
+## Overview
+
+**Creative North Star: "配线架 Patch Bay"**
+
+页面是一块配线架：每个 Skill、MCP、插件或规则片段是一排插孔，右侧 4 列是 Codex、Claude Code、Antigravity、DSH 原生 4 个插口，点亮一格就是把这一端接通。所有视觉决定都服务于「一眼看清哪些端接通、哪些没接、哪些坏了」，其余元素退到中性色里。
+
+这是 DSH 设置页里的一个分类（Operate 场景），与宿主融为一体：颜色全部来自宿主主题变量 `--dsw-alias-*`，亮色和暗色主题共用同一套规则；不引入自有字体、阴影或装饰图形。密度中等偏紧，常见面板宽度约 585px，也要在 390px 窄屏和 1120px 宽屏下成立。
+
+**Key Characteristics:**
+- 条目 × 4 端矩阵是唯一的主结构，4 个视图共用，端列在所有行严格对齐。
+- 状态用「形状 + 颜色」双重编码，从不只靠颜色。
+- 中性色为底，主题色只出现在已接通的格子、选中态和每个区域唯一的主操作上。
+- 平面分层，无阴影；层次靠细边框和浅色分组底区分。
+
+## Colors
+
+中性的宿主底色加一种主题色，另有成功、错误、警示三种状态色；表中十六进制是 `src/client.css` 里宿主变量的兜底值，DSH 中运行时以宿主主题为准。
+
+### Primary
+- **宿主激活蓝 Host Accent** (#386bdd)：已接通格子的边框与浅底（16% 混合）、选中的筛选标签与分段按钮、Tab 下划线、链接按钮、焦点环。来自 `--dsw-alias-state-active-primary`。
+
+### Neutral
+- **墨色 Ink** (#202631)：正文与名称。来自 `--dsw-alias-label-primary`。
+- **石板灰 Slate Muted** (#5c6573)：说明行、列头、计数、未接通格子的图标。来自 `--dsw-alias-label-secondary`。
+- **细线灰 Hairline** (#d9dfe7)：卡片、输入框、矩阵边框；行间分隔线用它的 60% 透明度。来自 `--dsw-alias-border-l2`。
+- **面板底 Panel** (#fafbfc)：卡片与输入框底色；分组标题行在它上面叠 3% 墨色。来自 `--dsw-alias-bg-layer-1`。
+
+### Status
+- **成功绿 Host Success** (#18704a)：完成的提示条、「已同步」、执行成功。
+- **错误红 Host Error** (#b32f35)：确认条边框、行内错误、写入失败、执行失败。
+- **琥珀警示 Amber Warn** (#c47f17)：损坏的格子（失效软链）、部分失败的提示条、「需处理 / 待同步」徽标。用作文字时与墨色按 65:35 混合（`--ap-warn-text`），亮色主题更深、暗色主题更亮，两种主题在琥珀浅底上都不低于 4.5:1。
+
+### Named Rules
+**The Connected-Only Rule.** 主题蓝只表示「已接通 / 已选中 / 主操作」。不要用它做装饰、分组标题或普通链接以外的强调。
+
+**The Never-Color-Alone Rule.** 每种状态都同时有形状：✓ 接通、虚线 + 未接通、✕ 损坏、斜纹锁定、◇ 待同步、转圈执行中。去掉颜色后状态仍然可读。
+
+## Typography
+
+**Body Font:** 系统字体栈（-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif）
+**Label/Mono Font:** ui-monospace, SFMono-Regular, Menlo, monospace
+
+**Character:** 沿用宿主的系统字体，不引入品牌字体；等宽字体只用在名称、路径、命令和配置上，标记「这是机器读的东西」。
+
+### Hierarchy
+- **Title** (600, 16px)：表单标题（添加 MCP、添加市场）。
+- **Headline** (600, 15px)：规则预览等侧栏标题。
+- **Body** (400, 14px, 1.55)：Tab、正文、条目名称（名称用 600）。
+- **Label** (600, 13px, 20px)：矩阵分组标题；与端名列头同行时按 20px 行高顶部对齐。
+- **Caption** (400, 12px)：说明行、分组说明、帮助文字、端名列头（11.5px）。
+- **Mono** (400, 12px)：Skill / MCP 名称、路径、命令、配置预览、执行记录输出。
+
+### Named Rules
+**The One-Line Name Rule.** 条目名称和徽章保持一行；空间不足时只截断名称（悬停看全名），徽章完整保留。
+
+## Layout
+
+根节点是 `inline-size` 容器，按插件实际宽度（不是窗口宽度）分三档：
+
+- **宽（≥ 760px）**：端列 96px，列头显示端名全称。
+- **常规面板（≈ 585px）**：端列 48px，列头显示简称（Codex / Claude / Agy / DSH）；搜索、刷新、主操作保持一行，筛选标签另起一行；≤ 560px 时 Tab 徽标只显示数字。
+- **窄（≤ 460px）**：隐藏列头，4 个格子换到第二行、等分宽度并带端名；路径条两列。任何宽度都不出现横向溢出。
+
+矩阵是三列网格（信息 / 4 端 / 行末动作），每行用 `subgrid` 继承列宽；有行末动作的视图把动作列固定为 40px（规则视图 104px），使同一视图里的多个矩阵（如插件的「已安装」与「市场」）端列对齐。表单和规则视图是「主区 + 侧栏」：主区 `flex: 999 1 320–520px`、侧栏 `flex: 1 1 240–280px`，放不下时侧栏落到下方。
+
+间距节奏为 4 / 6 / 8 / 12 / 16 / 20px；行高约 60px，行内上下 8px、左 14px。
+
+## Elevation & Depth
+
+完全平面，没有阴影。层次靠三样东西：细线边框（Hairline）、分组标题行的 3% 墨色底、侧栏与执行记录的同一浅底（Subtle）。状态区块（确认条、行内错误、警示框、提示条）用对应状态色的 45% 边框加 6–8% 浅底，而不是投影。
+
+### Named Rules
+**The Flat-Panel Rule.** 不加 box-shadow。需要突出某块时换边框颜色和浅底，不抬高它。
+
+## Shapes
+
+小圆角、细边框。控件统一 8px（输入框、开关块、代码块），图标按钮 7px，分段按钮内项 6px，状态区块 9px，卡片与矩阵外框 12px，筛选标签和徽章用全圆角胶囊。未接通的格子用 1px 虚线框，锁定的格子用 135° 斜纹底且无边框。
+
+## Components
+
+**基调：安静、精确。** 中性色为底，只有状态和主操作带颜色；边框细、圆角小，一眼能读出状态，与宿主 DSH 设置页融为一体。
+
+### 端开关块（Signature）
+- **形状**：宽 `min(列宽 - 6px, 56px)`、高 34px（窄屏 38px 等分）、8px 圆角，`role="switch"`。
+- **接通**：主题蓝 75% 实线边框、16% 浅底、✓。
+- **未接通**：虚线边框、灰色 ＋；悬停变主题蓝实线。
+- **损坏**：琥珀边框、14% 浅底、✕。
+- **锁定 / 不可用**：斜纹底、无边框、75% 不透明；存在时保留淡色 ✓。原因写在 `aria-label` 与 `title`。
+- **执行中**：主题蓝实线边框、转圈图标。
+
+### 只读状态格
+规则文件状态与未纳管文件用的图形 + 下方 11px 状态文字：✓ 已同步（成功绿）、◇ 外部修改 / 未创建 / 待拆软链（琥珀）、✕ 写入失败 / 读取异常（错误红）、文档图标 未纳管（琥珀）、短横 不改动（灰）。
+
+### Buttons
+- **主操作**：宿主 `Button variant="primary"`，每个区域只有一个（添加 MCP、添加市场、新建片段、保存并写入 N 端、重试 N 端）。
+- **次要**：宿主 `Button variant="outline"`（刷新、取消、同步 N 端、纳管）。
+- **行末图标按钮**：32px、7px 圆角、灰色图标，悬停 6% 墨色底；删除类悬停变错误红。名称写在 `aria-label` 与 `title`。
+
+### Chips
+- **筛选标签**：30px 胶囊、细线边框、灰字，右侧带计数；选中时主题蓝 60% 边框 + 14% 浅底 + 墨色字。计数为 0 的隐藏（「全部」与当前选中项除外）。
+
+### Inputs / Fields
+- **Style**：36px 高、8px 圆角、细线边框、面板底；名称类输入用等宽字体。
+- **Focus**：2px 主题蓝外环，偏移 2px。
+- **Error**：边框变错误红，下方 12px 错误文字（`role="alert"`）。
+- **分段单选**：外框 9px 圆角，内项 6px，选中项 18% 主题蓝底。
+- **端卡片复选框**：9px 圆角卡片，名称 + 一行现状说明；选中主题蓝边框 + 7% 浅底；不可用斜纹底。
+
+### Navigation
+- **Tab**：下划线样式，42px 高；未选中灰字，选中墨色字 + 2px 主题蓝下划线；名称后跟数量，需要处理时加琥珀徽标「N 需处理 / N 待同步」。
+
+### Cards / Containers
+- **矩阵与表单卡片**：12px 圆角、细线边框、面板底、无阴影；内边距 16px（矩阵行 8px / 14px）。
+
+## Do's and Don'ts
+
+### Do:
+- **Do** 让同一视图里所有端列严格对齐：新增矩阵时沿用三列网格 + `subgrid`，并固定行末动作列宽。
+- **Do** 每种新状态同时给出形状和颜色，并在 `aria-label` 写明「端名：状态」。
+- **Do** 颜色一律从 `--dsw-alias-*` 派生（`color-mix`），确保亮色和暗色主题都成立。
+- **Do** 在 585px、390px 与 ≥ 760px 三个宽度下检查布局。
+
+### Don't:
+- **Don't** 加阴影、渐变或装饰图形。
+- **Don't** 在页面内重复「Skills & MCP」标题，宿主已经显示。
+- **Don't** 用主题蓝表示「已接通 / 选中 / 主操作」以外的含义。
+- **Don't** 在一个区域放第二个 `primary` 按钮。
+- **Don't** 在页面上显示 MCP 环境变量或其他字符串配置的值，只显示名称。
 
 ## 核心原则
 
@@ -11,41 +240,52 @@
 ## 挂载与整体风格
 
 - 使用 DSH 正式设置分类插槽 `settings.section`（`id: 'dsh-agent-packages'`，`order: 28`，标签 `Skills & MCP`）；服务端关闭自动配置页（`settings.configure({ auto: false })`）。
-- 复用 DSH 主题变量（`--dsw-alias-*`）与 `@deepseek-ai/dsh-client-ui-primitives` 的 `Button`（统一 `outline`）。所有字段有可访问 `<label>`；错误 `role="alert"`；结果 `role="status"`；按钮文案不折行；下拉统一用主题化自定义下拉框。
-- 根节点是 `inline-size` 容器，按插件实际宽度（容器查询）切换布局；宽度 `<= 460px` 时隐藏端名表头，格子换到第二行并显示端名，不出现横向溢出。
+- 复用 DSH 主题变量（`--dsw-alias-*`，其余颜色由它们 `color-mix` 派生，亮色 / 暗色主题通用）与 `@deepseek-ai/dsh-client-ui-primitives` 的 `Button`：每个区域只有一个主操作用 `primary`（如「添加 MCP」「添加市场」「新建片段」「保存并写入」「重试 N 端」），其余用 `outline`；行末次要动作用图标按钮（名称写在 `aria-label` 与 `title`）。所有字段有可访问 `<label>`；错误 `role="alert"`；结果 `role="status"`；按钮文案不折行；二选一用分段单选，多选端用卡片式复选框（写明该端的现状或不可用原因）。
+- 页面结构：下划线 Tab（名称 + 数量 + 「N 需处理 / N 待同步」徽标）→ 一句视图说明 + 「本机路径」条（本视图读写的各端目录、配置文件或命令，以及回收目录 / 片段存储；路径只显示末三段，悬停看全路径）→ 提示条（可关闭）→ 工具栏（搜索、刷新、主操作）→ 分组筛选标签（Skills / MCP：全部 / 需处理 / 由插件提供 / N 端一致，计数为 0 的隐藏）→ 矩阵 → 执行记录。宿主设置页已有「Skills & MCP」标题，页面内不再重复。
+- 根节点是 `inline-size` 容器，按插件实际宽度（容器查询）切换布局：`>= 760px` 时端列 96px、表头显示端名全称；一般面板端列 48px、表头显示简称；`<= 460px` 时隐藏端名表头，格子换到第二行、4 格等分并显示端名，不出现横向溢出。
 
 ## 结构主线：条目 × 端矩阵
 
 - 4 个视图「Skills｜MCP｜插件｜规则」共用同一种矩阵：每行一个条目，右侧 4 列对齐 Codex / Claude / Agy / DSH（三列网格 + `subgrid`），端名并入第一个分组标题行。
 - **格子是开关**（`role="switch"`）：点亮立即同步到该端；熄灭先在行内确认（写明删除什么），确认后执行。只有该端操作成功才翻转，失败时保持原状并在行内与执行记录里写明原因。不可用的端置灰并说明原因（如「DSH 原生没有插件机制」「Claude Code 未添加该市场」）。
-- 状态用形状 + 颜色编码：实心点＝存在，✕＝损坏（失效软链、配置读取失败），短横＝不存在；每格 `aria-label` 写明端名与状态。
-- 行信息列：展开箭头 + 名称（悬停显示全名）+ 必要徽章，保持一行，空间不足只截断名称。行末「更多 ▾」放编辑、更新等次要动作。
+- 格子是开关块，状态用形状 + 颜色编码：主题色实底 + ✓＝存在，虚线框 + ＋＝不存在（可开启），警示色 + ✕＝损坏（失效软链），斜纹＝锁定或不可用（存在时保留淡色 ✓），旋转圈＝执行中；只读状态格（规则文件、未纳管文件）用 ✓ / ◇ / ✕ / 文档图标并在下方写状态文字。每格 `aria-label` 写明端名与状态。
+- 行信息列：展开箭头 + 名称（悬停显示全名）+ 必要徽章，保持一行，空间不足只截断名称；下方一行灰色说明（来源、版本、命令或路径，过长截断）。行末是图标按钮：MCP「编辑」、插件「在 Claude Code 中更新」、市场「刷新」、规则「上移 / 下移 / 删除」；没有「更多」菜单。
 - 执行中：被点的格子 / 按钮显示进行时；写操作串行，执行期间其他写操作禁用。提示条与执行记录只属于触发它们的视图；执行记录默认折叠为一行摘要，失败时自动展开。
 
 ## 各视图
 
 - **插件带来的条目禁止单独同步**：读取每个已装插件目录下的 `skills/` 子目录，以及 `.mcp.json`、`plugin.json` 的 `mcpServers`（含其指向的文件），名称匹配的 Skill / MCP 行标注「插件 X」，所有开关置灰（开启和关闭都禁止，关闭会删掉插件自己的文件），MCP 隐藏编辑入口；服务端同样拒绝这类开关与编辑。要同步到其他端，在「插件」视图把对应插件装过去。Skills 视图里这类行单独归入「由插件提供」组。
 
-1. **Skills**：行 = 4 端 Skills 目录里出现过的 Skill 名称（按名称合并）。分两组：「部分端 / 不一致」（只在部分端、各端内容不同或有失效软链）排在前面；「4 端一致」默认折叠，搜索时自动展开。
+1. **Skills**：行 = 4 端 Skills 目录里出现过的 Skill 名称（按名称合并）。分组依次为「需处理」（只在部分端、各端内容不同或有失效软链）、「由插件提供」、「4 端一致」（默认折叠，搜索或筛选时自动展开）。关闭实体目录的确认条写明回收目录路径。
    - 开启某端：在该端 Skills 目录建软链，指向源目录（优先取其他端的实体目录，否则取软链的真实路径）。
    - 关闭某端：软链直接删除；实体目录移入回收目录 `<DSH_HOME>/dsh-agent-packages/trash/<时间>/<端>/<名称>`（不直接删除，可手工恢复）。若其他端的软链指向这个实体目录，拒绝关闭并提示先关闭那些端。
    - 各端是不同的副本（真实路径不同）时，行内提示「各端内容不同」，展开可看各端路径。失效软链显示 ✕，可关闭清理。
 2. **MCP**：行 = 3 端 MCP 配置里出现过的 Server key（Codex `config.toml`、Claude Code `.claude.json`、Antigravity `mcp_config.json`）。DSH 原生列恒为不可用（没有可写入的 MCP 配置文件）。
    - 开启某端：取其他端已有的配置，翻译成该端格式写入（command / args / env / url / headers 互通，环境变量引用 `${KEY}` 与 Codex `env_vars` 互转）。
    - 关闭某端：从该端配置移除这个 key（局部修改，不动其他条目）。
-   - 「添加 MCP」表单手工填写（key、传输方式、命令与参数或 URL、Key-Value 环境变量、写入哪些端）；「更多 → 编辑」以第一个已有该 key 的端为底稿修改（表单写明底稿来自哪一端），写回所选端时保留各端原有的未建模字段（如 `alwaysLoad`）。各端配置不同时默认只勾选底稿所在的端，避免一次编辑抹平各端有意保留的差异（如按端区分的环境变量）。
+   - 「添加 MCP」表单手工填写（key、传输方式、命令与参数或 URL、Key-Value 环境变量、写入哪些端）；行末「编辑」以第一个已有该 key 的端为底稿修改（表单写明底稿来自哪一端），写回所选端时保留各端原有的未建模字段（如 `alwaysLoad`）。各端配置不同时默认只勾选底稿所在的端，避免一次编辑抹平各端有意保留的差异（如按端区分的环境变量）。表单右侧「将写入」按端显示写入内容（与服务端同一份渲染函数 `src/mcp-render.mjs`，Codex 以 TOML 示意，含保留的未建模字段）；每个端卡片写明「底稿所在端 / 已配置 / 配置不同 · 勾选会覆盖 / 未配置 · 将新增」。
+   - 分组：「需处理」（只在部分可写端或各端配置不同）、「由插件提供」、「N 端一致」（默认折叠）。展开行逐字段对比各端（传输方式、命令、参数、地址、环境变量、其他字段），不同的字段高亮；环境变量只显示变量名，不在页面显示值。
    - 归一化定义（命令、参数、URL、环境变量、请求头）不同时行内中性提示「各端配置不同」，展开查看各端配置。开启新端时从第一个已有该 key 的端复制，执行记录写明来源。
 3. **插件**：参照各端原生流程「先添加市场，再安装插件」。
    - **已安装**组：行 = 任一端已装的插件（`名称@市场`；Antigravity 没有市场名，按名称并入），版本取自各端记录。开启 / 关闭调用该端原生命令：Claude Code `plugin install|uninstall 名称@市场`（经配置的 claudeCommand 与 `CLAUDE_CONFIG_DIR`）、Codex `plugin add|remove 名称@市场`、Antigravity `plugin install 名称@市场`（内置市场）或 `plugin install <本地目录>`（其他市场，取 Claude Code / Codex 已拉取的市场目录里的插件路径）与 `plugin uninstall 名称`。该端未添加对应市场时格子置灰并说明。DSH 原生列恒为不可用。
-   - **市场**组：行 = 各端已添加的市场；Claude Code / Codex 两列为开关（`plugin marketplace add <来源>` / `remove`），来源取已添加该市场的端的记录；Antigravity 列只显示内置市场（不支持添加）。关闭市场的确认条写明后果：Claude Code 官方行为是同时卸载从该市场安装的所有插件，确认条列出这些插件；Codex 是否连带卸载未确认，照实写明。「添加市场」表单填 `owner/repo` 或 Git URL 并选择端。每个市场「更多 → 刷新」调用各端更新命令；展开市场浏览其中的插件（来自本地 `marketplace.json`，按需读取并缓存，最多渲染 50 条并提示总数，用搜索缩小范围），在行内直接用开关安装到各端。
-   - 插件更新：只对 Claude Code 提供「更多 → 更新（Claude Code）」（`plugin update`）；Codex 与 Antigravity 没有可靠的原生更新命令，通过刷新市场后重新安装。
+   - **市场**组：行 = 各端已添加的市场；Claude Code / Codex 两列为开关（`plugin marketplace add <来源>` / `remove`），来源取已添加该市场的端的记录；Antigravity 列只显示内置市场（不支持添加）。关闭市场的确认条写明后果：Claude Code 官方行为是同时卸载从该市场安装的所有插件，确认条列出这些插件；Codex 是否连带卸载未确认，照实写明。「添加市场」表单填来源（`owner/repo`、https / git@ Git 地址或本地绝对路径，前后端共用 `MARKETPLACE_SOURCE_RE`）并选择端，输入时显示识别结果，右侧预览将执行的命令（取各端配置的命令名）。每个市场行末「刷新」调用各端更新命令；展开市场浏览其中的插件（来自本地 `marketplace.json`，按需读取并缓存，展开后有市场内搜索框，最多渲染 50 条并提示总数），在行内直接用开关安装到各端。
+   - 插件更新：只对 Claude Code 提供行末「在 Claude Code 中更新」（`plugin update`）；Codex 与 Antigravity 没有可靠的原生更新命令，通过刷新市场后重新安装。
    - Codex 内置市场（`openai-bundled`、`openai-primary-runtime`）的插件归入单独的折叠组，不与第三方插件混排。
 4. **规则**：规则由多条片段组成，开关决定写入哪些端，各端文件严格等于开启片段按顺序拼接（去首尾空行、空行分隔）。
    - 展开片段编辑标题与正文；上移 / 下移；删除（行内确认）；「新建片段」。
    - 只写拼接结果因本次操作而变化的端；某端没有开启的片段时不改动该端文件；会覆盖外部修改时先确认。
-   - 「各端文件」行显示每端状态，「同步」显式重写待同步的端；「最终写入预览」按端查看。
+   - 「各端文件」行显示每端状态（已同步 / 外部修改 / 未创建 / 待拆软链 / 读取异常 / 不改动），「同步 N 端」显式重写待同步的端（先确认）。
+   - 布局为左矩阵 + 右侧常驻「最终写入预览」（分段按钮切端，待同步的端带点）；预览的端有外部修改时并列「纳管为片段」与「同步覆盖」。
    - 本机指令文件与片段不一致（或没有片段）时可「纳管」：全文导入为只对该端开启的片段并关闭该端其他片段，文件内容不变；软链文件写入时拆分为独立文件，原链接目标不受影响。
    - 旧的「公共 + 私有」内容自动迁移为片段，拼接结果逐字节不变，旧文件保留。
+
+## 失败与重试
+
+- 前端能判断的错误不发请求：如添加市场的来源按 `MARKETPLACE_SOURCE_RE` 校验，错误写在输入框下方（空、`~` 或相对路径、`http://`、无法识别）；服务端仍返回 400 时把 message 放到同一位置，不只显示在页面顶部。
+- 逐端执行的动作（如添加市场）一端失败不影响另一端；结果 `ok: false` 时表单保持打开、输入保留，右侧逐端显示结果：失败行展开 `step.detail` 原文，按原文归类（`退出码 127`＝找不到命令，提示检查该端命令配置；`命令超时`＝超时），可复制命令；主按钮变为「重试 N 端」，只提交失败的端，成功的端不重复执行；全部成功后才关闭表单。
+- 规则：`rules.save` 返回 `saved`（片段已存储，草稿即可清除）与 `ok`（所有需要写入的端都成功）；`rules.sync` 同样返回 `ok`。某端写入失败时提示条用警示色，「各端文件」该端显示「写入失败」（来自本次执行记录，下一次写入成功后消失），并提供「重试写入」，只对失败的端调用 `rules.sync`。
+- 纳管读取失败（`rules.import` 抛错）时什么都没改，错误显示在该行内：文件不存在或失效软链给「刷新」，其余给「重试」。
+- 有失败时执行记录自动展开，失败的步骤排在最前；部分失败的提示条用警示色。
 
 ## 设计边界
 

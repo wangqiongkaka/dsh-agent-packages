@@ -1,4 +1,5 @@
-import { HARNESS_IDS, MatrixGroup, RowToggle, ToggleCells, harnessLabel } from './client-ui.jsx';
+import { Fragment } from 'react';
+import { HARNESS_IDS, MatrixGroup, RowMeta, RowToggle, ToggleCells, harnessLabel } from './client-ui.jsx';
 
 function entryLabel(entry) {
   if (!entry) return '没有';
@@ -6,16 +7,32 @@ function entryLabel(entry) {
   return entry.isSymlink ? `软链 → ${entry.real}` : `实体目录 ${entry.path}`;
 }
 
-export function SkillsView({ ctx }) {
-  const { state, busy, pendingKey, search, run, ask, confirmFor, expanded, toggleExpanded } = ctx;
-  const needle = search.trim().toLowerCase();
-  const rows = state.skills.rows.filter(row => !needle || row.name.toLowerCase().includes(needle));
-  // 插件带来的 Skill 由插件管理：单独成组、禁止在矩阵里同步
+const isBroken = row => Object.values(row.harnesses).some(e => e.broken);
+
+// 分组：插件带来的单独成组；其余按是否需要处理（只在部分端、各端内容不同、有失效软链）
+export function skillGroups(state, rows = state.skills.rows) {
   const owned = rows.filter(row => row.providedBy?.length);
   const free = rows.filter(row => !row.providedBy?.length);
-  const attention = free.filter(row => !row.complete || !row.consistent || Object.values(row.harnesses).some(e => e.broken));
-  const settled = free.filter(row => !attention.includes(row));
-  const settledOpen = Boolean(expanded['skills:settled']) || Boolean(needle);
+  const attn = free.filter(row => !row.complete || !row.consistent || isBroken(row));
+  return { attn, owned, settled: free.filter(row => !attn.includes(row)) };
+}
+
+function rowMeta(row) {
+  if (row.providedBy?.length) return `随插件 ${row.providedBy.join('、')} 安装；在「插件」视图装到其他端`;
+  const present = HARNESS_IDS.filter(h => row.harnesses[h]);
+  if (isBroken(row)) return `${HARNESS_IDS.filter(h => row.harnesses[h]?.broken).map(harnessLabel).join('、')} 的软链目标已不存在，可关闭清理`;
+  if (!row.consistent) return `${present.length} 端 · 各端是不同的副本，展开查看路径`;
+  const real = Object.values(row.harnesses)[0]?.real || Object.values(row.harnesses)[0]?.path;
+  return row.complete ? `4 端 → ${real}` : `仅 ${present.map(harnessLabel).join('、')} · ${real}`;
+}
+
+export function SkillsView({ ctx }) {
+  const { state, busy, pendingKey, search, filter, run, ask, confirmFor, expanded, toggleExpanded } = ctx;
+  const needle = search.trim().toLowerCase();
+  const rows = state.skills.rows.filter(row => !needle || row.name.toLowerCase().includes(needle));
+  const { attn, owned, settled } = skillGroups(state, rows);
+  const show = id => filter === 'all' || filter === id;
+  const settledOpen = Boolean(expanded['skills:settled']) || Boolean(needle) || filter === 'settled';
 
   const toggle = (row, harness, on) => {
     const key = `skill:${row.name}:${harness}`;
@@ -27,24 +44,25 @@ export function SkillsView({ ctx }) {
       ? `将删除 ${label} 的失效软链 ${entry.path}。`
       : entry.isSymlink
         ? `将删除 ${label} 的软链 ${entry.path}（源目录不受影响）。`
-        : `将把 ${label} 的实体目录 ${entry.path} 移入回收目录，可从回收目录手工恢复。`;
+        : `将把 ${label} 的实体目录 ${entry.path} 移入回收目录 ${state.trashDir}，可从回收目录手工恢复。`;
     ask(`skill:${row.name}`, text, entry.isSymlink || entry.broken ? '确认删除' : '确认移入回收目录', exec);
   };
 
   const renderRow = row => {
     const open = Boolean(expanded[`skill:${row.name}`]);
     const detailId = `ap-skill-${row.name}`;
-    const broken = Object.values(row.harnesses).some(e => e.broken);
+    const broken = isBroken(row);
     const ownedBy = row.providedBy?.length ? row.providedBy.join('、') : '';
     return (
-      <article key={row.name} className={`ap-matrix-row ap-pkg-card ${ownedBy ? '' : broken ? 'is-error' : !row.consistent ? 'is-warn' : ''}`.trim()}>
+      <article key={row.name} className="ap-matrix-row ap-pkg-card">
         <div className="ap-row-main">
           <div className="ap-pkg-title-row">
             <RowToggle open={open} title={row.name} controls={detailId} mono onClick={() => toggleExpanded(`skill:${row.name}`)} />
             {ownedBy && <span className="ap-badge ap-badge-kind" title="由插件安装与清理，不能在这里单独同步">插件 {ownedBy}</span>}
-            {!ownedBy && !row.consistent && <span className="ap-badge ap-badge-update" title="各端的真实路径不同，内容可能不一样">各端内容不同</span>}
-            {!ownedBy && broken && <span className="ap-badge ap-badge-err">失效软链</span>}
+            {!ownedBy && !row.consistent && <span className="ap-badge ap-badge-kind" title="各端的真实路径不同，内容可能不一样">各端内容不同</span>}
+            {!ownedBy && broken && <span className="ap-badge ap-badge-warn">失效软链</span>}
           </div>
+          <RowMeta indent>{rowMeta(row)}</RowMeta>
         </div>
         <ToggleCells
           ariaLabel={`${row.name} 各端开关`}
@@ -78,30 +96,35 @@ export function SkillsView({ ctx }) {
     );
   };
 
-  if (!rows.length) {
+  const groups = [
+    show('attn') && attn.length > 0 && { id: 'attn', title: '需处理', note: '只在部分端、各端内容不同或有失效软链', rows: attn },
+    show('owned') && owned.length > 0 && { id: 'owned', title: '由插件提供', note: '开关已锁定：关闭会删掉插件自己的文件', rows: owned },
+    show('settled') && settled.length > 0 && { id: 'settled', title: '4 端一致', note: '4 端指向同一目录', rows: settled, collapsible: !needle && filter !== 'settled' },
+  ].filter(Boolean);
+
+  if (!groups.length) {
     return (
       <div className="ap-empty">
-        <p>{needle ? '没有符合搜索条件的 Skill。' : '4 端的 Skills 目录里还没有 Skill。先用你习惯的方式安装（如 npx skills add），刷新后就会出现在这里。'}</p>
+        <p>{needle || filter !== 'all' ? '没有符合条件的 Skill。' : '4 端的 Skills 目录里还没有 Skill。先用你习惯的方式安装（如 npx skills add），刷新后就会出现在这里。'}</p>
       </div>
     );
   }
 
   return (
     <div className="ap-list ap-matrix">
-      {attention.length > 0 && <MatrixGroup title="部分端 / 不一致" count={attention.length} labels />}
-      {attention.map(renderRow)}
-      {settled.length > 0 && (
-        <MatrixGroup title="4 端一致" count={settled.length} labels={!attention.length}>
-          {!needle && (
-            <button type="button" className="ap-link-btn" aria-expanded={settledOpen} onClick={() => toggleExpanded('skills:settled')}>
-              {settledOpen ? '收起' : '展开'}
-            </button>
-          )}
-        </MatrixGroup>
-      )}
-      {settledOpen && settled.map(renderRow)}
-      {owned.length > 0 && <MatrixGroup title="由插件提供" count={owned.length} labels={!attention.length && !settled.length} />}
-      {owned.map(renderRow)}
+      {groups.map((group, index) => (
+        <Fragment key={group.id}>
+          <MatrixGroup title={group.title} count={group.rows.length} labels={index === 0}>
+            <span className="ap-group-note">{group.note}</span>
+            {group.collapsible && (
+              <button type="button" className="ap-link-btn" aria-expanded={settledOpen} onClick={() => toggleExpanded('skills:settled')}>
+                {settledOpen ? '收起' : '展开'}
+              </button>
+            )}
+          </MatrixGroup>
+          {(group.id !== 'settled' || settledOpen) && group.rows.map(renderRow)}
+        </Fragment>
+      ))}
     </div>
   );
 }

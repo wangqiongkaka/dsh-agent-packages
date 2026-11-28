@@ -3,15 +3,13 @@ import {
   readJsonMcpServers,
   removeCodexMcpServer,
   removeJsonMcpServer,
-  renderMcpConfigForHarness,
   upsertCodexMcpServer,
   upsertJsonMcpServer,
 } from './config-editors.mjs';
 import { HARNESS_IDS, HARNESS_META } from './shared.mjs';
+import { renderMcpForHarness as render } from './mcp-render.mjs';
 
 export const MCP_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._@-]*$/;
-// 本项目 MCP 定义覆盖的字段；其余字段（如 alwaysLoad、超时）属于各端自己，改写时原样保留
-const MODELED_KEYS = ['command', 'args', 'env', 'env_vars', 'url', 'headers', 'http_headers'];
 
 export function mcpHarnesses(harnessPaths) {
   return HARNESS_IDS.filter(h => harnessPaths[h]?.mcpFile);
@@ -74,12 +72,6 @@ async function writeServer(target, key, config) {
   return target.mcpFormat === 'toml'
     ? upsertCodexMcpServer(target.mcpFile, key, config)
     : upsertJsonMcpServer(target.mcpFile, key, config);
-}
-
-function render(harnessId, spec, existingRaw) {
-  const { config } = renderMcpConfigForHarness(harnessId, spec);
-  const extras = Object.fromEntries(Object.entries(existingRaw ?? {}).filter(([field]) => !MODELED_KEYS.includes(field)));
-  return { ...config, ...extras };
 }
 
 // 开启：取其他端已有配置翻译成该端格式写入；关闭：从该端配置移除这个 key

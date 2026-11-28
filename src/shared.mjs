@@ -2,6 +2,13 @@ export const ENDPOINT = '/api/dsh-agent-packages';
 export const HEADER_KEY = 'x-agent-pkg-key';
 export const PLUGIN_ID = 'dsh-agent-packages';
 
+export function isPlainObject(value) {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// 市场来源：owner/repo（可带 @ref）、https Git 地址、git@ 地址或本地绝对路径；前后端共用
+export const MARKETPLACE_SOURCE_RE = /^(?:[\w.-]+\/[\w.-]+(?:@[\w./-]+)?|https:\/\/\S+|git@[\w.-]+:\S+|\/\S+)$/;
+
 export const HARNESS_IDS = ['codex', 'claude-code', 'antigravity', 'dsh'];
 export const HARNESS_META = {
   codex: {

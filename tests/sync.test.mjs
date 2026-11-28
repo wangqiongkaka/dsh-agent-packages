@@ -235,6 +235,18 @@ test('插件：先添加市场再安装；成功才翻转；命令成功但记�
   assert.match(fail.steps[0].detail, /network down/);
 
   await assert.rejects(() => service.action({ type: 'marketplace.add', source: 'rm -rf /', harnesses: ['codex'] }), /市场来源/);
+
+  // 添加市场逐端执行：一端失败不影响另一端，整体 ok=false，失败步骤带命令与错误原文
+  service.runCommand = async argv => {
+    if (argv[0] === 'codex') throw new Error(`${argv.join(' ')} 退出码 1：fatal: repository not found`);
+    return { command: argv.join(' '), stdout: 'ok', stderr: '' };
+  };
+  const partial = await service.action({ type: 'marketplace.add', source: 'acme/extras', harnesses: ['claude-code', 'codex'] });
+  assert.equal(partial.ok, false);
+  assert.match(partial.message, /1 端失败/);
+  assert.deepEqual(partial.steps.map(s => [s.harness, s.status]), [['claude-code', 'ok'], ['codex', 'error']]);
+  assert.match(partial.steps[1].detail, /退出码 1/);
+  assert.match(partial.steps[1].command, /codex plugin marketplace add acme\/extras/);
 });
 
 test('Claude Code 命令配置为 reclaude：按其账号配置目录读写，插件命令经 reclaude 执行并带上 CLAUDE_CONFIG_DIR', async t => {
