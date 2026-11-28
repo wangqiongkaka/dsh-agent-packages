@@ -54,7 +54,7 @@ const TABS = [
 const NOTES = {
   skills: '直接读取 4 端 Skills 目录。点亮格子即在该端建软链，熄灭前先确认。',
   mcp: '直接读取 3 端 MCP 配置。点亮格子即按该端格式复制已有配置，熄灭前先确认。',
-  plugins: '先添加市场，再安装插件。开关调用各端原生命令。',
+  plugins: '插件请用各端原生命令手工安装（见下方命令），这里只查看各端装了什么。插件带来的 Skills 与 MCP 跟随插件，不能单独同步。',
   rules: '各端指令文件 = 开启的片段按顺序拼接。开关与保存立即写入；有外部修改的端需确认后覆盖。',
 };
 
@@ -95,10 +95,7 @@ export function PackagesPage() {
   const [expanded, setExpanded] = useState({});
   const [filter, setFilter] = useState('all');
   const [mcpForm, setMcpForm] = useState(null);
-  const [marketplaceForm, setMarketplaceForm] = useState(null);
   const [ruleDrafts, setRuleDrafts] = useState({});
-  // 市场插件清单按需读取并缓存，切换视图不丢
-  const [catalogs, setCatalogs] = useState({});
   const [reloadTick, setReloadTick] = useState(0);
 
   // 成功提示 3 秒后自动消失；失败或需要核对的警示提示保留到手动关闭
@@ -209,8 +206,6 @@ export function PackagesPage() {
     ) : null),
     expanded,
     toggleExpanded: key => setExpanded(prev => ({ ...prev, [key]: !prev[key] })),
-    catalogs,
-    setCatalogs,
   };
 
   const rulesDirty = Object.keys(ruleDrafts).length > 0;
@@ -287,7 +282,6 @@ export function PackagesPage() {
             <div className="ap-actions ap-toolbar-actions">
               {tab !== 'rules' && <Button variant="outline" disabled={busy} title="重新读取 4 端本机配置" onClick={() => void refresh()}>刷新</Button>}
               {tab === 'mcp' && <Button variant="primary" disabled={busy || Boolean(mcpForm)} onClick={() => setMcpForm(newMcpForm(state))}>添加 MCP</Button>}
-              {tab === 'plugins' && <Button variant="primary" disabled={busy || Boolean(marketplaceForm)} onClick={() => setMarketplaceForm({})}>添加市场</Button>}
               {tab === 'rules' && (
                 <Button variant="primary" disabled={busy || Boolean(ruleDrafts.__new__)} onClick={() => setRuleDrafts(prev => ({ ...prev, __new__: { title: '', content: '' } }))}>新建片段</Button>
               )}
@@ -303,7 +297,7 @@ export function PackagesPage() {
 
           {tab === 'skills' && <SkillsView ctx={ctx} />}
           {tab === 'mcp' && <McpView ctx={ctx} form={mcpForm} setForm={setMcpForm} />}
-          {tab === 'plugins' && <PluginsView ctx={ctx} form={marketplaceForm} setForm={setMarketplaceForm} />}
+          {tab === 'plugins' && <PluginsView ctx={ctx} />}
           {tab === 'rules' && <RulesView ctx={ctx} drafts={ruleDrafts} setDrafts={setRuleDrafts} />}
 
           {log?.tab === tab && <LogPanel log={log} onClear={() => setLog(null)} />}

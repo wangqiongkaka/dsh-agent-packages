@@ -122,8 +122,6 @@ export function ToggleCells({ cells, ariaLabel, disabled }) {
 
 const ICONS = {
   edit: 'M10.5 3l2.5 2.5L6 12.5H3.5V10z',
-  update: 'M8 2.5v8M4.5 7L8 10.5 11.5 7M3 13.5h10',
-  refresh: 'M13 8a5 5 0 1 1-1.5-3.6M13 2.5v3h-3',
   up: 'M8 13V3M4 7l4-4 4 4',
   down: 'M8 3v10M4 9l4 4 4-4',
   trash: 'M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5',

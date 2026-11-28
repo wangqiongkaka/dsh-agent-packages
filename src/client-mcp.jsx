@@ -340,7 +340,7 @@ export function McpView({ ctx, form, setForm }) {
             on: Boolean(row.harnesses[h]),
             status: row.harnesses[h] ? 'installed' : 'unselected',
             label: `${harnessLabel(h)}：${row.harnesses[h] ? specSummary(row.harnesses[h].spec) : '没有'}`,
-            disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，请在「插件」视图把插件安装到其他端`
+            disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，跟随插件安装，不能单独同步；${h === 'dsh' ? 'DSH 原生没有插件机制' : '需要在其他端使用请在该端手工安装插件'}`
               : writableSet.has(h) ? '' : `${harnessLabel(h)} 没有可写入的 MCP 配置文件`,
             busy: pendingKey === `mcp:${row.key}:${h}`,
             onToggle: on => toggle(row, h, on),
@@ -357,7 +357,7 @@ export function McpView({ ctx, form, setForm }) {
 
   const groups = [
     show('attn') && attn.length > 0 && { id: 'attn', title: '需处理', note: '只在部分端，或各端配置不同', rows: attn },
-    show('owned') && owned.length > 0 && { id: 'owned', title: '由插件提供', note: '随插件写入；在「插件」视图把插件装到其他端', rows: owned },
+    show('owned') && owned.length > 0 && { id: 'owned', title: '由插件提供', note: '随插件写入，不能单独同步；需要在其他端使用请在该端手工安装插件', rows: owned },
     show('settled') && settled.length > 0 && { id: 'settled', title: `${writable.length} 端一致`, note: '可写入的各端配置相同', rows: settled, collapsible: !needle && filter !== 'settled' },
   ].filter(Boolean);
 

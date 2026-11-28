@@ -28,42 +28,6 @@ async function makeSkill(dir, name) {
   await writeFile(join(dir, name, 'SKILL.md'), `---\nname: ${name}\n---\n`);
 }
 
-// 模拟三端插件 CLI：真实改写各端记录文件，页面按读回的记录判断是否翻转
-const calls = [];
-let failCodexMarketplace = false;
-async function fakeCli(argv) {
-  calls.push(argv.join(' '));
-  if (failCodexMarketplace && argv[0] === 'codex' && argv[2] === 'marketplace') {
-    throw new Error(`${argv.join(' ')} 退出码 1：fatal: repository 'https://github.com/acme/extras.git/' not found`);
-  }
-  const [bin, , sub, a, b] = argv;
-  if (bin === 'claude' && sub === 'marketplace' && a === 'add') {
-    const file = join(claudeDir, 'plugins', 'known_marketplaces.json');
-    const known = JSON.parse(await readFile(file, 'utf8'));
-    known[b.split('/').pop()] = { source: { source: 'github', repo: b }, installLocation: join(claudeDir, 'plugins', 'marketplaces', b.split('/').pop()) };
-    await writeFile(file, JSON.stringify(known));
-  } else if (bin === 'claude' && (sub === 'install' || sub === 'uninstall')) {
-    const file = join(claudeDir, 'plugins', 'installed_plugins.json');
-    const data = JSON.parse(await readFile(file, 'utf8'));
-    if (sub === 'install') data.plugins[a] = [{ scope: 'user', version: '1.0.0', installPath: join(claudeDir, 'plugins', 'cache', a) }];
-    else delete data.plugins[a];
-    await writeFile(file, JSON.stringify(data));
-  } else if (bin === 'codex' && sub === 'marketplace' && a === 'add') {
-    const file = join(codexDir, 'config.toml');
-    await writeFile(file, `${await readFile(file, 'utf8')}\n[marketplaces.${b.split('/').pop()}]\nsource_type = "git"\nsource = "https://github.com/${b}.git"\n`);
-  } else if (bin === 'codex' && sub === 'add') {
-    const file = join(codexDir, 'config.toml');
-    await writeFile(file, `${await readFile(file, 'utf8')}\n[plugins."${a}"]\nenabled = true\n`);
-  } else if (bin === 'agy' && sub === 'install') {
-    const name = a.split('/').pop().split('@')[0];
-    await mkdir(join(agyDir, 'plugins', name), { recursive: true });
-    await writeFile(join(agyDir, 'plugins', name, 'plugin.json'), '{"version":"1.0.0"}');
-  } else if (bin === 'agy' && sub === 'uninstall') {
-    await rm(join(agyDir, 'plugins', a), { recursive: true, force: true });
-  }
-  return { command: argv.join(' '), stdout: 'ok', stderr: '' };
-}
-
 try {
   // —— Skills：notes 只在 Claude（实体目录）；other 只在 Codex；shared-a / shared-b 四端一致；stale 在 Antigravity 是失效软链
   const source = join(homeDir, '.agents', 'skills');
@@ -93,10 +57,6 @@ try {
     '[mcp_servers.hindsight.env]',
     'HINDSIGHT_MCP_HARNESS = "codex"',
     '',
-    '[marketplaces.openai-bundled]',
-    'source_type = "local"',
-    `source = "${join(codexDir, 'bundled')}"`,
-    '',
     '[plugins."browser@openai-bundled"]',
     'enabled = true',
     '',
@@ -109,23 +69,16 @@ try {
     },
   }, null, 2) + '\n');
 
-  // —— 插件：Claude 已添加市场 tools（本地目录含 tidy 与 lint 两个插件），已装 tidy
-  const mpRoot = join(claudeDir, 'plugins', 'marketplaces', 'tools');
-  await mkdir(join(mpRoot, '.claude-plugin'), { recursive: true });
-  for (const name of ['tidy', 'lint']) await mkdir(join(mpRoot, 'plugins', name), { recursive: true });
-  await writeFile(join(mpRoot, '.claude-plugin', 'marketplace.json'), JSON.stringify({
-    name: 'tools',
-    plugins: [
-      { name: 'tidy', description: '整理代码风格', version: '1.0.0', source: './plugins/tidy' },
-      { name: 'lint', description: '静态检查', version: '0.3.0', source: './plugins/lint' },
-    ],
-  }));
-  await writeFile(join(claudeDir, 'plugins', 'known_marketplaces.json'), JSON.stringify({ tools: { source: { source: 'github', repo: 'acme/tools' }, installLocation: mpRoot } }));
-  await writeFile(join(claudeDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'tidy@tools': [{ scope: 'user', version: '1.0.0', installPath: join(mpRoot, 'plugins', 'tidy') }] } }));
+  // —— 插件（各端手工安装，页面只读）：Claude 装了 tidy@tools，Antigravity 装了同名 tidy，Codex 装了内置的 browser
+  const tidyDir = join(claudeDir, 'plugins', 'cache', 'tools', 'tidy', '1.0.0');
+  await mkdir(tidyDir, { recursive: true });
+  await writeFile(join(claudeDir, 'plugins', 'installed_plugins.json'), JSON.stringify({ plugins: { 'tidy@tools': [{ scope: 'user', version: '1.0.0', installPath: tidyDir }] } }));
+  await mkdir(join(agyDir, 'plugins', 'tidy'), { recursive: true });
+  await writeFile(join(agyDir, 'plugins', 'tidy', 'plugin.json'), '{"name":"tidy","version":"1.0.1"}');
 
   // —— 插件自带的 Skill 与 MCP：tidy 带 tidy-helper 与 tidy-mcp，已落到 DSH Skills 目录与 Codex 配置
-  await makeSkill(join(mpRoot, 'plugins', 'tidy', 'skills'), 'tidy-helper');
-  await writeFile(join(mpRoot, 'plugins', 'tidy', '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy-mcp' } } }));
+  await makeSkill(join(tidyDir, 'skills'), 'tidy-helper');
+  await writeFile(join(tidyDir, '.mcp.json'), JSON.stringify({ mcpServers: { 'tidy-mcp': { command: 'tidy-mcp' } } }));
   await makeSkill(join(dshHome, 'skills'), 'tidy-helper');
   await writeFile(join(codexDir, 'config.toml'), `${await readFile(join(codexDir, 'config.toml'), 'utf8')}\n[mcp_servers.tidy-mcp]\ncommand = "tidy-mcp"\n`);
 
@@ -134,7 +87,7 @@ try {
   await symlink(join(codexDir, 'AGENTS.md'), join(dshHome, 'AGENTS.md'));
   await writeFile(join(claudeDir, 'CLAUDE.md'), '# Claude 规则\n');
 
-  const service = new PackageManagerService({ root: join(dshHome, 'dsh-agent-packages'), homeDir, dshHome, runCommand: fakeCli });
+  const service = new PackageManagerService({ root: join(dshHome, 'dsh-agent-packages'), homeDir, dshHome });
   await service.init();
 
   const bundled = await build({
@@ -296,72 +249,19 @@ try {
   await row('codegraph').locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
   await page.screenshot({ path: 'artifacts/packages-mcp.png', fullPage: true });
 
-  // 3. 插件：未添加市场的端置灰；先在市场行开启 Codex，再安装；Antigravity 用本地目录
+  // 3. 插件：只读，状态格展示各端安装情况；没有开关、市场分组和「添加市场」
   await page.getByRole('tab', { name: /插件/ }).click();
   const tidy = row('tidy');
-  assert.equal(await sw(tidy, 'Codex').isDisabled(), true, 'Codex 未添加市场时不可安装');
-  assert.match(await sw(tidy, 'Codex').getAttribute('aria-label'), /Codex 未添加市场 tools/);
-  assert.equal(await sw(tidy, 'DSH 原生').isDisabled(), true);
+  await tidy.waitFor();
+  assert.match(await tidy.innerText(), /Claude Code 1\.0\.0 · Antigravity 1\.0\.1/);
+  assert.equal(await tidy.getByRole('switch').count(), 0, '插件格只读');
+  assert.equal(await tidy.getByRole('img', { name: 'Claude Code：已安装 1.0.0' }).count(), 1);
+  assert.equal(await tidy.getByRole('img', { name: 'Codex：未安装' }).count(), 1);
+  assert.equal(await tidy.getByRole('img', { name: 'DSH 原生：没有插件机制' }).count(), 1);
+  assert.equal(await page.getByRole('button', { name: '添加市场' }).count(), 0);
+  assert.equal(await page.locator('.ap-matrix-group', { hasText: '市场' }).count(), 0);
+  await page.getByText(/插件请用各端原生命令手工安装/).waitFor();
   assert.equal(await page.locator('.ap-pkg-card', { hasText: 'browser' }).count(), 0, '内置插件默认折叠');
-  await sw(tidy, 'Antigravity').click();
-  await notice(/已在 Antigravity 安装「tidy」/);
-  assert.equal(calls.at(-1), `agy plugin install ${join(mpRoot, 'plugins', 'tidy')}`);
-  const tools = page.locator('.ap-pkg-card', { has: page.getByRole('button', { name: 'tools', exact: true }) });
-  await sw(tools, 'Codex').click();
-  await notice(/已在 Codex 添加市场「tools」/);
-  assert.equal(calls.at(-1), 'codex plugin marketplace add acme/tools');
-  await sw(row('tidy'), 'Codex').click();
-  await notice(/已在 Codex 安装「tidy」/);
-  assert.equal(calls.at(-1), 'codex plugin add tidy@tools');
-  // 展开市场浏览插件，直接在 Claude Code 安装 lint
-  await tools.getByRole('button', { name: 'tools', exact: true }).click();
-  const lint = page.locator('.ap-catalog-row', { hasText: 'lint' });
-  await lint.waitFor();
-  assert.match(await lint.innerText(), /静态检查/);
-  const cellLeft = loc => loc.locator('.ap-cells').first().evaluate(el => Math.round(el.getBoundingClientRect().left));
-  assert.equal(await cellLeft(lint), await cellLeft(row('tidy')), '市场里的插件行与已安装行的状态列对齐');
-  await sw(lint, 'Claude Code').click();
-  await notice(/已在 Claude Code 安装「lint」/);
-  assert.equal(calls.at(-1), 'claude plugin install lint@tools');
-  // 在 Claude Code 移除市场：确认条列出会被连带卸载的插件
-  await sw(tools, 'Claude Code').click();
-  await tools.locator('.ap-confirm p').getByText(/Claude Code 会同时卸载从该市场安装的所有插件（2 个：lint、tidy）/).waitFor();
-  await tools.locator('.ap-confirm').getByRole('button', { name: '取消' }).click();
-  // 卸载需确认
-  await sw(row('tidy'), 'Antigravity').click();
-  await page.locator('.ap-confirm p').getByText(/将在 Antigravity 执行卸载命令/).waitFor();
-  await page.getByRole('button', { name: '确认卸载' }).click();
-  await notice(/已从 Antigravity 卸载「tidy」/);
-  assert.equal(calls.at(-1), 'agy plugin uninstall tidy');
-  // 添加市场：前端按服务端同一规则校验，不合法不执行命令
-  await page.getByRole('button', { name: '添加市场' }).click();
-  const callCount = calls.length;
-  await page.locator('#ap-mp-source').fill('~/dev/my-plugins');
-  await page.locator('.ap-editor').getByRole('button', { name: '添加到 2 端' }).click();
-  await page.locator('.ap-editor [role="alert"]').getByText(/本地路径请写绝对路径/).waitFor();
-  assert.equal(calls.length, callCount, '校验不通过不执行命令');
-  // Codex 失败、Claude 成功：表单保留，失败行写明原因，只重试失败的端
-  failCodexMarketplace = true;
-  await page.locator('#ap-mp-source').fill('acme/extras');
-  await page.locator('.ap-editor').getByText('识别为 GitHub 仓库 acme/extras').waitFor();
-  await page.locator('.ap-editor').getByRole('button', { name: '添加到 2 端' }).click();
-  await notice(/添加市场 acme\/extras：1 端失败/);
-  assert.match(await page.locator('.ap-banner-notice').getAttribute('class'), /is-warn/);
-  const badStep = page.locator('.ap-step.is-bad');
-  assert.match(await badStep.innerText(), /Codex[\s\S]*退出码 1/);
-  assert.deepEqual(calls.slice(callCount), ['claude plugin marketplace add acme/extras', 'codex plugin marketplace add acme/extras']);
-  await page.screenshot({ path: 'artifacts/packages-market-fail.png', fullPage: true });
-  await page.setViewportSize({ width: 585, height: 1000 });
-  await page.screenshot({ path: 'artifacts/packages-market-fail-panel.png', fullPage: true });
-  await page.setViewportSize({ width: 1360, height: 1000 });
-  // 部分失败的警示提示不自动消失
-  await page.waitForTimeout(3500);
-  assert.equal(await page.locator('.ap-banner-notice.is-warn').count(), 1, '警示提示应保留到手动关闭');
-  failCodexMarketplace = false;
-  await page.locator('.ap-editor').getByRole('button', { name: '重试 1 端' }).click();
-  await notice(/已添加市场 acme\/extras/);
-  assert.equal(await page.locator('.ap-editor').count(), 0, '全部成功后关闭表单');
-  assert.deepEqual(calls.slice(callCount + 2), ['codex plugin marketplace add acme/extras'], '只重试失败的端');
   await page.locator('.ap-matrix-group', { hasText: '内置插件' }).getByRole('button', { name: '展开' }).click();
   await row('browser').waitFor();
   await page.screenshot({ path: 'artifacts/packages-plugins.png', fullPage: true });
@@ -410,6 +310,9 @@ try {
   await page.setViewportSize({ width: 585, height: 1000 });
   await page.screenshot({ path: 'artifacts/packages-rules-fail-panel.png', fullPage: true });
   await page.setViewportSize({ width: 1360, height: 1000 });
+  // 部分失败的警示提示不自动消失
+  await page.waitForTimeout(3500);
+  assert.equal(await page.locator('.ap-banner-notice.is-warn').count(), 1, '警示提示应保留到手动关闭');
   await page.getByRole('button', { name: '重试写入 DSH', exact: true }).click();
   await notice(/规则同步完成/);
   assert.equal((await lstat(join(dshHome, 'AGENTS.md'))).isSymbolicLink(), false);

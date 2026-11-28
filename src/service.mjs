@@ -1,19 +1,11 @@
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { HARNESS_IDS, HARNESS_META, resolveClaudeCodePaths, resolveHarnessPaths } from './constants.mjs';
-import { MARKETPLACE_SOURCE_RE, composeSnippets } from './shared.mjs';
+import { composeSnippets } from './shared.mjs';
 import { MODELED_KEYS } from './mcp-render.mjs';
-import { defaultExecFile, runCommand } from './cli.mjs';
+import { defaultExecFile } from './cli.mjs';
 import { listSkills, toggleSkill } from './skills.mjs';
 import { listMcp, mcpHarnesses, saveMcp, toggleMcp } from './mcp.mjs';
-import {
-  PLUGIN_HARNESSES,
-  PLUGIN_NAME_RE,
-  listMarketplacePlugins,
-  listPlugins,
-  marketplaceArgv,
-  pluginArgv,
-  pluginBlockReason,
-} from './plugins.mjs';
+import { PLUGIN_HARNESSES, listPlugins } from './plugins.mjs';
 import {
   InstructionsStore,
   buildInstructionsState,
@@ -23,21 +15,7 @@ import {
 import { HttpError } from './http.mjs';
 import { isReclaudeCommand, reclaudeConfigDir } from './claude-command.mjs';
 
-// owner/repo[@ref]、HTTPS / SSH Git 地址或本地绝对路径
-
 const label = harnessId => HARNESS_META[harnessId]?.label ?? harnessId;
-
-// 插件命令需要的环境：Claude Code 用 dsh-harness-provider 指定的配置目录，Codex 用非默认的 CODEX_HOME
-function cliEnv(paths, harnessId) {
-  if (harnessId === 'claude-code' && paths['claude-code'].explicitConfigDir) {
-    return { CLAUDE_CONFIG_DIR: paths['claude-code'].explicitConfigDir };
-  }
-  if (harnessId === 'codex') {
-    const codexHome = dirname(paths.codex.mcpFile);
-    if (codexHome !== join(paths.home, '.codex')) return { CODEX_HOME: codexHome };
-  }
-  return {};
-}
 
 function serializeSkills({ rows, errors }, provides) {
   return {
@@ -71,7 +49,6 @@ export class PackageManagerService {
       claudeConfigDir: staticClaudeConfigDir,
     });
     this.execImpl = options.execImpl ?? defaultExecFile;
-    this.runCommand = options.runCommand ?? runCommand;
     // Claude Code / Codex 启动命令与配置目录，均可为取值函数以读到 dsh-harness-provider 最新设置
     this.claudeCommand = options.claudeCommand ?? '';
     this.claudeConfigDir = options.claudeConfigDir ?? '';
@@ -100,34 +77,13 @@ export class PackageManagerService {
     await this.instructionsStore.readConfig();
   }
 
-  async pluginView(paths) {
-    const { plugins, marketplaces, provides } = await listPlugins(paths);
-    const marketplaceOf = name => marketplaces.find(item => item.name === name);
-    return {
-      marketplaces,
-      provides,
-      plugins: plugins.map(row => {
-        const localDir = row.harnesses['claude-code']?.installPath || row.harnesses.codex?.installPath || '';
-        return {
-          ...row,
-          blocked: Object.fromEntries(HARNESS_IDS.map(h => [h, pluginBlockReason({
-            harness: h,
-            marketplace: row.marketplace,
-            marketplaceRow: marketplaceOf(row.marketplace),
-            localDir,
-            installed: Boolean(row.harnesses[h]),
-          })])),
-        };
-      }),
-    };
-  }
-
   async state() {
     const paths = await this.currentHarnessPaths();
     const [skills, mcp, plugins, instructions] = await Promise.all([
       listSkills(paths),
       listMcp(paths),
-      this.pluginView(paths),
+      // 插件由各端原生命令手工安装，这里只读取各端记录
+      listPlugins(paths),
       buildInstructionsState({ store: this.instructionsStore, harnessPaths: paths }),
     ]);
     return {
@@ -139,7 +95,7 @@ export class PackageManagerService {
         instructionsFile: paths[id].instructionsFile,
         supportsMcp: mcpHarnesses(paths).includes(id),
         supportsPlugins: PLUGIN_HARNESSES.includes(id),
-        // 各端插件 CLI 的命令名；Antigravity 固定为 agy（见 plugins.mjs）
+        // 各端插件 CLI 的命令名，提示用户手工安装时用哪个命令；Antigravity 固定为 agy
         command: paths[id].command ?? (id === 'antigravity' ? 'agy' : ''),
       })),
       trashDir: this.trashDir,
@@ -162,16 +118,6 @@ export class PackageManagerService {
     };
   }
 
-  // 执行一条 CLI 命令并记成一步执行记录；失败不抛出，由调用方按步骤结果判断
-  async runStep(paths, harnessId, argv) {
-    try {
-      const { command, stdout, stderr } = await this.runCommand(argv, { env: cliEnv(paths, harnessId) });
-      return { harness: harnessId, status: 'ok', command, detail: '命令执行成功', output: (stdout || stderr).trim().slice(-2000) };
-    } catch (error) {
-      return { harness: harnessId, status: 'error', command: argv.join(' '), detail: error.message };
-    }
-  }
-
   async action(input) {
     if (!input || typeof input.type !== 'string') throw new HttpError(400, '缺少操作类型 type');
     let paths;
@@ -186,7 +132,7 @@ export class PackageManagerService {
       case 'skill.toggle': {
         const harness = harnessOf(input.harness);
         const owners = (await listPlugins(await currentPaths())).provides.skills[input.name];
-        if (owners?.length) throw new HttpError(400, `「${input.name}」由插件 ${owners.join('、')} 提供，请在「插件」视图把插件安装到其他端`);
+        if (owners?.length) throw new HttpError(400, `「${input.name}」由插件 ${owners.join('、')} 提供，跟随插件安装，不能单独同步；需要在其他端使用请在该端手工安装插件`);
         try {
           const { detail } = await toggleSkill({ harnessPaths: await currentPaths(), name: input.name, harness, on: Boolean(input.on), trashDir: this.trashDir });
           return done(detail, [{ harness, status: 'ok', detail }]);
@@ -198,7 +144,7 @@ export class PackageManagerService {
       case 'mcp.toggle': {
         const harness = harnessOf(input.harness);
         const owners = (await listPlugins(await currentPaths())).provides.mcp[input.key];
-        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，请在「插件」视图把插件安装到其他端`);
+        if (owners?.length) throw new HttpError(400, `「${input.key}」由插件 ${owners.join('、')} 提供，跟随插件安装，不能单独同步；需要在其他端使用请在该端手工安装插件`);
         try {
           const { detail, warn = false } = await toggleMcp({ harnessPaths: await currentPaths(), key: input.key, harness, on: Boolean(input.on) });
           // warn：写入成功但需要人去核对（如按端不同的变量被照常复制），提示条用警示色且不自动消失
@@ -216,110 +162,6 @@ export class PackageManagerService {
           return done(`已把「${input.key}」写入 ${steps.map(step => label(step.harness)).join('、')}`, steps);
         } catch (error) {
           throw new HttpError(400, error.message);
-        }
-      }
-
-      case 'plugin.toggle': {
-        const harness = harnessOf(input.harness);
-        const name = String(input.name ?? '');
-        const marketplace = String(input.marketplace ?? '');
-        if (!PLUGIN_NAME_RE.test(name) || (marketplace && !PLUGIN_NAME_RE.test(marketplace))) throw new HttpError(400, '插件名或市场名不合法');
-        const on = Boolean(input.on);
-        const p = await currentPaths();
-        const view = await this.pluginView(p);
-        const row = view.plugins.find(item => item.name === name && (!marketplace || item.marketplace === marketplace || !item.marketplace));
-        const marketplaceRow = view.marketplaces.find(item => item.name === marketplace);
-        const installed = Boolean(row?.harnesses[harness]);
-        if (on === installed) return done(`「${name}」在 ${label(harness)} ${on ? '已安装' : '未安装'}，无需操作`);
-        let localDir = row?.harnesses['claude-code']?.installPath || row?.harnesses.codex?.installPath || '';
-        if (on && !localDir && marketplace && harness === 'antigravity') {
-          localDir = (await listMarketplacePlugins(p, marketplace).catch(() => [])).find(item => item.name === name)?.localDir || '';
-        }
-        const reason = pluginBlockReason({ harness, marketplace, marketplaceRow, localDir, installed });
-        if (reason) throw new HttpError(400, reason);
-        const argv = pluginArgv({
-          harness,
-          action: on ? 'install' : 'uninstall',
-          name,
-          marketplace,
-          localDir,
-          agyBuiltin: Boolean(marketplaceRow?.harnesses.antigravity?.builtin),
-          claudeCommand: p['claude-code'].command,
-          codexCommand: p.codex.command,
-        });
-        const step = await this.runStep(p, harness, argv);
-        if (step.status !== 'ok') return done(`「${name}」在 ${label(harness)} ${on ? '安装' : '卸载'}失败`, [step], false);
-        // 状态以各端记录为准：命令返回成功但记录没变时如实提示，不翻转开关
-        const after = (await this.pluginView(p)).plugins.find(item => item.name === name && (!marketplace || item.marketplace === marketplace || !item.marketplace));
-        const changed = Boolean(after?.harnesses[harness]) === on;
-        return done(
-          changed
-            ? `已${on ? '在' : '从'} ${label(harness)} ${on ? '安装' : '卸载'}「${name}」`
-            : `命令执行成功，但 ${label(harness)} 的插件记录没有变化，请查看执行记录`,
-          [step],
-          changed,
-        );
-      }
-
-      case 'plugin.update': {
-        const p = await currentPaths();
-        const view = await this.pluginView(p);
-        const row = view.plugins.find(item => item.id === input.id);
-        if (!row?.harnesses['claude-code']) throw new HttpError(400, '只有已装在 Claude Code 的插件支持原生更新；Codex 与 Antigravity 请刷新市场后重新安装');
-        const step = await this.runStep(p, 'claude-code', pluginArgv({ harness: 'claude-code', action: 'update', name: row.name, marketplace: row.marketplace, claudeCommand: p['claude-code'].command }));
-        return done(step.status === 'ok' ? `已更新 Claude Code 的「${row.name}」` : `更新「${row.name}」失败`, [step], step.status === 'ok');
-      }
-
-      case 'marketplace.toggle': {
-        const harness = harnessOf(input.harness);
-        if (harness !== 'claude-code' && harness !== 'codex') throw new HttpError(400, `${label(harness)} 不支持添加或移除市场`);
-        const on = Boolean(input.on);
-        const p = await currentPaths();
-        const { marketplaces } = await listPlugins(p);
-        const row = marketplaces.find(item => item.name === input.name);
-        if (!row) throw new HttpError(404, `没有名为「${input.name}」的市场`);
-        if (on === Boolean(row.harnesses[harness])) return done(`${label(harness)} ${on ? '已添加' : '未添加'}市场「${row.name}」，无需操作`);
-        if (on && !row.source) throw new HttpError(400, `不知道市场「${row.name}」的来源，请用「添加市场」填写`);
-        const step = await this.runStep(p, harness, marketplaceArgv({ harness, action: on ? 'add' : 'remove', name: row.name, source: row.source, claudeCommand: p['claude-code'].command, codexCommand: p.codex.command }));
-        if (step.status !== 'ok') return done(`市场「${row.name}」在 ${label(harness)} ${on ? '添加' : '移除'}失败`, [step], false);
-        const after = (await listPlugins(p)).marketplaces.find(item => item.name === row.name);
-        const changed = Boolean(after?.harnesses[harness]) === on;
-        return done(changed ? `已${on ? '在' : '从'} ${label(harness)} ${on ? '添加' : '移除'}市场「${row.name}」` : `命令执行成功，但 ${label(harness)} 的市场记录没有变化，请查看执行记录`, [step], changed);
-      }
-
-      case 'marketplace.add': {
-        const source = String(input.source ?? '').trim();
-        if (!MARKETPLACE_SOURCE_RE.test(source)) throw new HttpError(400, '市场来源请填写 owner/repo、Git 地址或本地绝对路径');
-        const targets = (Array.isArray(input.harnesses) ? input.harnesses : []).filter(h => h === 'claude-code' || h === 'codex');
-        if (!targets.length) throw new HttpError(400, '至少选择 Claude Code 或 Codex 中的一端');
-        const p = await currentPaths();
-        const steps = [];
-        for (const harness of targets) {
-          steps.push(await this.runStep(p, harness, marketplaceArgv({ harness, action: 'add', source, claudeCommand: p['claude-code'].command, codexCommand: p.codex.command })));
-        }
-        const failed = steps.filter(step => step.status !== 'ok');
-        return done(failed.length ? `添加市场 ${source}：${failed.length} 端失败，请查看执行记录` : `已添加市场 ${source}`, steps, !failed.length);
-      }
-
-      case 'marketplace.refresh': {
-        const p = await currentPaths();
-        const row = (await listPlugins(p)).marketplaces.find(item => item.name === input.name);
-        if (!row) throw new HttpError(404, `没有名为「${input.name}」的市场`);
-        const steps = [];
-        for (const harness of ['claude-code', 'codex'].filter(h => row.harnesses[h])) {
-          steps.push(await this.runStep(p, harness, marketplaceArgv({ harness, action: 'refresh', name: row.name, claudeCommand: p['claude-code'].command, codexCommand: p.codex.command })));
-        }
-        if (!steps.length) throw new HttpError(400, `市场「${row.name}」是 Antigravity 内置市场，由 Antigravity 自行更新`);
-        const failed = steps.filter(step => step.status !== 'ok');
-        return done(failed.length ? `刷新市场「${row.name}」：${failed.length} 端失败` : `已刷新市场「${row.name}」`, steps, !failed.length);
-      }
-
-      case 'marketplace.plugins': {
-        const p = await currentPaths();
-        try {
-          return { plugins: await listMarketplacePlugins(p, String(input.name ?? '')) };
-        } catch (error) {
-          throw new HttpError(404, error.message);
         }
       }
 

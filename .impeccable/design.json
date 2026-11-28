@@ -128,7 +128,7 @@
     "typographyMeta": {
       "title": {
         "displayName": "Title",
-        "purpose": "表单标题（添加 MCP、添加市场）。"
+        "purpose": "表单标题（添加 MCP、编辑 MCP）。"
       },
       "headline": {
         "displayName": "Headline",
@@ -217,7 +217,7 @@
       "kind": "input",
       "refersTo": "input",
       "description": "工具栏搜索与表单字段。",
-      "html": "<label class=\"ds-field\"><span>市场来源</span><input class=\"ds-input\" placeholder=\"owner/repo、Git 地址或本地绝对路径\" value=\"acme/extras\"></label>",
+      "html": "<label class=\"ds-field\"><span>MCP 名称（key）</span><input class=\"ds-input\" placeholder=\"例如 playwright\" value=\"hindsight\"></label>",
       "css": ".ds-field { display: flex; flex-direction: column; gap: 5px; font: 12px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #5c6573; } .ds-input { height: 36px; width: 280px; padding: 7px 10px; border: 1px solid #d9dfe7; border-radius: 8px; background: #fafbfc; color: #202631; font: 13px ui-monospace, SFMono-Regular, Menlo, monospace; } .ds-input:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; }"
     },
     {
@@ -233,7 +233,7 @@
       "kind": "custom",
       "refersTo": "",
       "description": "操作结果：成功为绿，部分失败为琥珀，可关闭。",
-      "html": "<div class=\"ds-banner is-warn\" role=\"status\"><span>添加市场 acme/extras：1 端失败，请查看执行记录</span><button class=\"ds-banner-close\" aria-label=\"关闭提示\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 4l8 8M12 4l-8 8\"/></svg></button></div>",
+      "html": "<div class=\"ds-banner is-warn\" role=\"status\"><span>已保存规则，1 端写入失败，请查看执行记录</span><button class=\"ds-banner-close\" aria-label=\"关闭提示\"><svg viewBox=\"0 0 16 16\" width=\"14\" height=\"14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.6\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M4 4l8 8M12 4l-8 8\"/></svg></button></div>",
       "css": ".ds-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 6px 6px 12px; border-radius: 9px; font: 13px -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; color: #18704a; border: 1px solid color-mix(in srgb, #18704a 40%, transparent); background: color-mix(in srgb, #18704a 7%, transparent); } .ds-banner.is-warn { color: #8b6020; border-color: color-mix(in srgb, #c47f17 45%, transparent); background: color-mix(in srgb, #c47f17 7%, transparent); } .ds-banner-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 7px; background: transparent; color: inherit; cursor: pointer; } .ds-banner-close:hover { background: rgba(32,38,49,0.06); } .ds-banner-close:focus-visible { outline: 2px solid #386bdd; outline-offset: 2px; }"
     },
     {

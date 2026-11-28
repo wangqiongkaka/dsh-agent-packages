@@ -18,7 +18,7 @@ export function skillGroups(state, rows = state.skills.rows) {
 }
 
 function rowMeta(row) {
-  if (row.providedBy?.length) return `随插件 ${row.providedBy.join('、')} 安装；在「插件」视图装到其他端`;
+  if (row.providedBy?.length) return `随插件 ${row.providedBy.join('、')} 安装，不能单独同步；需要在其他端使用请在该端手工安装插件`;
   const present = HARNESS_IDS.filter(h => row.harnesses[h]);
   if (isBroken(row)) return `${HARNESS_IDS.filter(h => row.harnesses[h]?.broken).map(harnessLabel).join('、')} 的软链目标已不存在，可关闭清理`;
   if (!row.consistent) return `${present.length} 端 · 各端是不同的副本，展开查看路径`;
@@ -74,7 +74,7 @@ export function SkillsView({ ctx }) {
               on: Boolean(entry),
               status: entry ? (entry.broken ? 'failed' : 'installed') : 'unselected',
               label: `${harnessLabel(h)}：${entryLabel(entry)}`,
-              disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，请在「插件」视图把插件安装到其他端` : '',
+              disabledReason: ownedBy ? `由插件 ${ownedBy} 提供，跟随插件安装，不能单独同步；${h === 'dsh' ? 'DSH 原生没有插件机制' : '需要在其他端使用请在该端手工安装插件'}` : '',
               busy: pendingKey === `skill:${row.name}:${h}`,
               onToggle: on => toggle(row, h, on),
             };
